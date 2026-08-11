@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Loader2, Sparkles, Filter, ExternalLink, AlertCircle, Database, ShieldAlert, X, SlidersHorizontal } from 'lucide-react';
+import { Search, Loader2, Sparkles, Filter, ExternalLink, AlertCircle, Database, ShieldAlert, X, SlidersHorizontal, Info } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 interface AttributeItem {
@@ -23,6 +23,8 @@ interface SearchResultItem {
   keyword_score?: number;
   hybrid_score?: number;
   match_type?: string;
+  ranking_priority?: number;
+  query_intent?: string;
   matched_fields?: string[];
   status: string;
   commerce_description?: string;
@@ -37,6 +39,7 @@ interface SearchResponse {
   total: number;
   search_mode?: string;
   degraded_mode?: string | null;
+  query_intent?: string | null;
   results: SearchResultItem[];
 }
 
@@ -100,6 +103,7 @@ export const SearchShell: React.FC = () => {
   const [searchData, setSearchData] = useState<SearchResponse | null>(null);
   const [facetData, setFacetData] = useState<FacetPayload | null>(null);
   const [showFiltersSidebar, setShowFiltersSidebar] = useState<boolean>(true);
+  const [expandedScoreId, setExpandedScoreId] = useState<string | null>(null);
 
   // Sync parameters with URL
   const syncUrlParams = (
@@ -542,10 +546,18 @@ export const SearchShell: React.FC = () => {
 
           {searchData && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-                <span>
-                  Found <strong className="text-white">{searchData.total}</strong> products matching query
-                </span>
+              <div className="flex flex-wrap items-center justify-between text-xs text-slate-400 px-1 gap-2">
+                <div className="flex items-center gap-2">
+                  <span>
+                    Found <strong className="text-white">{searchData.total}</strong> products matching query
+                  </span>
+                  {searchData.query_intent && (
+                    <span className="bg-indigo-950 border border-indigo-700 text-indigo-300 px-2 py-0.5 rounded text-[11px] font-mono">
+                      Intent: {searchData.query_intent}
+                    </span>
+                  )}
+                </div>
+
                 {searchData.degraded_mode && (
                   <span className="bg-amber-950 border border-amber-700 text-amber-300 px-2 py-0.5 rounded text-[11px] flex items-center gap-1">
                     <ShieldAlert className="w-3.5 h-3.5" /> Degraded: {searchData.degraded_mode}
@@ -563,76 +575,128 @@ export const SearchShell: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {searchData.results.map((item) => (
-                    <div
-                      key={item.product_id}
-                      className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl p-5 shadow-lg transition space-y-3"
-                    >
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-base font-bold text-white hover:text-indigo-400 transition cursor-pointer" onClick={() => navigate(`/products/${item.product_id}`)}>
-                              {item.product_name}
-                            </h3>
-                            {item.match_type === 'exact' && (
-                              <span className="bg-emerald-950 border border-emerald-700 text-emerald-300 text-[10px] px-2 py-0.5 rounded font-medium">
-                                Exact Match
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 mt-1">
-                            <span>SKU: <strong className="text-slate-200">{item.sku}</strong></span>
-                            <span>•</span>
-                            <span>Brand: <strong className="text-slate-200">{item.manufacturer}</strong></span>
-                            <span>•</span>
-                            <span>Category: <strong className="text-indigo-300">{item.category}</strong></span>
-                            {item.model && (
-                              <>
-                                <span>•</span>
-                                <span>Model: <strong className="text-slate-200">{item.model}</strong></span>
-                              </>
-                            )}
-                          </div>
-                        </div>
+                  {searchData.results.map((item) => {
+                    const isExpanded = expandedScoreId === item.product_id;
+                    const matchLabel = item.match_type === 'exact'
+                      ? 'Exact Match'
+                      : item.match_type === 'hybrid'
+                      ? 'Hybrid Match'
+                      : item.match_type === 'keyword'
+                      ? 'Keyword Match'
+                      : 'Semantic Match';
 
-                        <div className="flex items-center gap-3">
-                          <div className="text-right">
-                            <div className="text-[11px] text-slate-400">Relevance</div>
-                            <div className="text-sm font-bold text-indigo-400">
-                              {((item.hybrid_score ?? item.similarity_score ?? item.keyword_score ?? 0) * 100).toFixed(0)}%
+                    const matchBadgeClass = item.match_type === 'exact'
+                      ? 'bg-emerald-950 border-emerald-700 text-emerald-300'
+                      : item.match_type === 'hybrid'
+                      ? 'bg-indigo-950 border-indigo-700 text-indigo-300'
+                      : item.match_type === 'keyword'
+                      ? 'bg-purple-950 border-purple-700 text-purple-300'
+                      : 'bg-blue-950 border-blue-700 text-blue-300';
+
+                    return (
+                      <div
+                        key={item.product_id}
+                        className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl p-5 shadow-lg transition space-y-3"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3
+                                className="text-base font-bold text-white hover:text-indigo-400 transition cursor-pointer"
+                                onClick={() => navigate(`/products/${item.product_id}`)}
+                              >
+                                {item.product_name}
+                              </h3>
+                              <span className={`border text-[10px] px-2 py-0.5 rounded font-medium ${matchBadgeClass}`}>
+                                {matchLabel}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 mt-1">
+                              <span>SKU: <strong className="text-slate-200">{item.sku}</strong></span>
+                              <span>•</span>
+                              <span>Brand: <strong className="text-slate-200">{item.manufacturer}</strong></span>
+                              <span>•</span>
+                              <span>Category: <strong className="text-indigo-300">{item.category}</strong></span>
+                              {item.model && (
+                                <>
+                                  <span>•</span>
+                                  <span>Model: <strong className="text-slate-200">{item.model}</strong></span>
+                                </>
+                              )}
                             </div>
                           </div>
-                          <button
-                            onClick={() => navigate(`/products/${item.product_id}`)}
-                            className="p-2 text-slate-400 hover:text-white bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-lg transition"
-                          >
-                            <ExternalLink className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
 
-                      {item.commerce_description && (
-                        <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
-                          {item.commerce_description}
-                        </p>
-                      )}
+                          <div className="flex items-center gap-3">
+                            <div className="text-right flex items-center gap-1">
+                              <div>
+                                <div className="text-[11px] text-slate-400">Relevance</div>
+                                <div className="text-sm font-bold text-indigo-400">
+                                  {((item.hybrid_score ?? item.similarity_score ?? item.keyword_score ?? 0) * 100).toFixed(0)}%
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => setExpandedScoreId(isExpanded ? null : item.product_id)}
+                                className="p-1 text-slate-400 hover:text-indigo-300 transition"
+                                title="Toggle Score Breakdown"
+                              >
+                                <Info className="w-4 h-4" />
+                              </button>
+                            </div>
 
-                      {/* Attribute Badges */}
-                      {item.attributes && item.attributes.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-2 pt-1">
-                          {item.attributes.slice(0, 4).map((attr) => (
-                            <span
-                              key={attr.attribute_name}
-                              className="bg-slate-950 border border-slate-800 text-slate-300 text-[11px] px-2.5 py-1 rounded-md flex items-center gap-1.5"
+                            <button
+                              onClick={() => navigate(`/products/${item.product_id}`)}
+                              className="p-2 text-slate-400 hover:text-white bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-lg transition"
+                              title="View Product Intelligence"
                             >
-                              <span className="text-slate-400">{attr.display_name}:</span>
-                              <strong className="text-white">{attr.raw_value}</strong>
-                            </span>
-                          ))}
+                              <ExternalLink className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  ))}
+
+                        {/* Detailed Score Breakdown Popover */}
+                        {isExpanded && (
+                          <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs space-y-1.5 font-mono text-slate-300">
+                            <div className="font-semibold text-indigo-400 border-b border-slate-800 pb-1 flex justify-between">
+                              <span>Score Breakdown</span>
+                              <span>Mode: {item.match_type}</span>
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                              <div>Keyword Score: <strong className="text-white">{((item.keyword_score || 0) * 100).toFixed(0)}%</strong></div>
+                              <div>Similarity Score: <strong className="text-white">{((item.similarity_score || 0) * 100).toFixed(0)}%</strong></div>
+                              <div>Hybrid Score: <strong className="text-indigo-300">{((item.hybrid_score || 0) * 100).toFixed(0)}%</strong></div>
+                              <div>Priority: <strong className="text-emerald-400">{item.ranking_priority ?? 0}</strong></div>
+                            </div>
+                            {item.matched_fields && item.matched_fields.length > 0 && (
+                              <div className="text-[11px] text-slate-400 pt-1">
+                                Matched Fields: <span className="text-slate-200">{item.matched_fields.join(', ')}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {item.commerce_description && (
+                          <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
+                            {item.commerce_description}
+                          </p>
+                        )}
+
+                        {/* Attribute Badges */}
+                        {item.attributes && item.attributes.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            {item.attributes.slice(0, 4).map((attr) => (
+                              <span
+                                key={attr.attribute_name}
+                                className="bg-slate-950 border border-slate-800 text-slate-300 text-[11px] px-2.5 py-1 rounded-md flex items-center gap-1.5"
+                              >
+                                <span className="text-slate-400">{attr.display_name}:</span>
+                                <strong className="text-white">{attr.raw_value}</strong>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

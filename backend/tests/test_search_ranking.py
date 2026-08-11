@@ -165,3 +165,69 @@ def test_read_only_ranking_guarantee(session: Session):
 
     assert prod_count_before == prod_count_after
     assert audit_count_before == audit_count_after
+
+
+def test_pipeline_indexing_sync(session: Session):
+    """Task 8.7: Test complete pipeline indexing, update, and deletion synchronization."""
+    from app.services.indexing import IndexingService
+    from app.services.embeddings.mock_provider import MockEmbeddingProvider
+    from app.models import EmbeddingMetadata
+
+    # 1. Create product
+    p = Product(sku="SYNC-99", brand="Siemens", product_name="Sync Motor 99", category="Motors", quality_score=90.0)
+    session.add(p)
+    session.commit()
+
+    # 2. Index product
+    indexer = IndexingService(session, embedding_provider=MockEmbeddingProvider())
+    res = indexer.index_product(p.id)
+    assert res["status"] == "indexed"
+
+    meta = session.exec(select(EmbeddingMetadata).where(EmbeddingMetadata.product_id == p.id)).first()
+    assert meta is not None
+    assert meta.content_hash == res["content_hash"]
+
+    # 3. Product Update and Re-index
+    p.product_name = "Sync Motor 99 Updated"
+    session.add(p)
+    session.commit()
+
+    res_updated = indexer.index_product(p.id)
+    assert res_updated["status"] == "indexed"
+    meta_updated = session.exec(select(EmbeddingMetadata).where(EmbeddingMetadata.product_id == p.id)).first()
+    assert meta_updated.content_hash == res_updated["content_hash"]
+
+    # 4. Deletion synchronization
+    indexer.delete_product_index(p.id)
+    meta_after_del = session.exec(select(EmbeddingMetadata).where(EmbeddingMetadata.product_id == p.id)).first()
+    assert meta_after_del is None
+
+
+def test_exact_sku_keyword_only_vs_high_semantic_non_exact_candidate(session: Session):
+    """Task 8.8 #30: Explicitly guards against exact SKU ranking below high-semantic non-exact candidate."""
+    p_exact_sku = Product(
+        sku="BUG-SKU-99",
+        brand="Siemens",
+        product_name="Siemens Inverter Drive",
+        category="Drives",
+        quality_score=70.0,
+    )
+    p_high_semantic = Product(
+        sku="NON-EXACT-77",
+        brand="Siemens",
+        product_name="BUG-SKU-99 Compatible Variable Speed Drive",
+        category="Drives",
+        quality_score=98.0,
+    )
+    session.add(p_exact_sku)
+    session.add(p_high_semantic)
+    session.commit()
+
+    service = HybridSearchService(session)
+    res = service.search_hybrid(query="BUG-SKU-99", limit=10)
+
+    assert res.total >= 1
+    # First result MUST be exact SKU match (Priority 3) regardless of hybrid score or quality score
+    assert res.results[0].sku == "BUG-SKU-99"
+    assert res.results[0].ranking_priority == 3
+
