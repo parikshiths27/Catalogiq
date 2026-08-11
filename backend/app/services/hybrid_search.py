@@ -15,6 +15,8 @@ from app.services.embeddings.factory import get_embedding_provider
 from app.services.keyword_search import KeywordSearchService
 from app.services.qdrant import QdrantService
 
+from app.services.search_ranking import SearchRankingService, ExactMatchPriority, QueryIntent
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,8 @@ class HybridSearchResultItem(BaseModel):
     keyword_score: float
     similarity_score: float
     match_type: str  # "exact", "hybrid", "keyword", "semantic"
+    ranking_priority: Optional[int] = 0
+    query_intent: Optional[str] = None
     matched_fields: List[str] = Field(default_factory=list)
     commerce_description: Optional[str] = None
     short_description: Optional[str] = None
@@ -44,6 +48,7 @@ class HybridSearchResponse(BaseModel):
     query: str
     search_mode: str  # "hybrid", "semantic", "keyword"
     degraded_mode: Optional[str] = None  # None, "vector_unavailable", "embedding_failed", "keyword_unavailable"
+    query_intent: Optional[str] = None
     total: int
     results: List[HybridSearchResultItem]
 
@@ -83,13 +88,15 @@ class HybridSearchService:
                 query=query or "",
                 search_mode="hybrid",
                 degraded_mode=None,
+                query_intent=None,
                 total=0,
                 results=[],
             )
 
         raw_query = query.strip()
         query_norm = raw_query.lower()
-        k_candidate = max(30, limit * 3)
+        k_candidate = SearchRankingService.get_candidate_pool_size(limit)
+        query_intent = SearchRankingService.classify_query_intent(raw_query)
 
         def _parse_list(val: Any) -> List[str]:
             if not val:
@@ -190,6 +197,7 @@ class HybridSearchService:
                 query=raw_query,
                 search_mode="hybrid",
                 degraded_mode=degraded_mode,
+                query_intent=query_intent.value,
                 total=0,
                 results=[],
             )
@@ -218,6 +226,7 @@ class HybridSearchService:
                 query=raw_query,
                 search_mode="hybrid",
                 degraded_mode=degraded_mode,
+                query_intent=query_intent.value,
                 total=0,
                 results=[],
             )
@@ -232,41 +241,30 @@ class HybridSearchService:
         for attr in all_attrs:
             product_attrs_map.setdefault(attr.product_id, []).append(attr)
 
-        # 4. Score Fusion, Exact Match Detection, and Classification
+        # 4. Score Fusion, Exact Match Detection, and Priority Ranking
         hybrid_results: List[HybridSearchResultItem] = []
 
         for p in candidate_products:
             kw_score, matched_fields = keyword_hits.get(p.id, (0.0, []))
             sem_score = vector_hits.get(p.id, 0.0)
 
-            # Check exact match rules
-            p_sku_norm = (p.sku or "").strip().lower()
-            p_model_norm = (p.model or "").strip().lower()
-            p_name_norm = (p.product_name or "").strip().lower()
+            exact_priority = SearchRankingService.compute_exact_priority(
+                query_norm, p.sku, p.model, p.product_name
+            )
 
-            is_exact_sku = p_sku_norm == query_norm
-            is_exact_model = bool(p_model_norm and p_model_norm == query_norm)
-            is_exact_name = p_name_norm == query_norm
+            if exact_priority == ExactMatchPriority.EXACT_SKU and "sku" not in matched_fields:
+                matched_fields.append("sku")
+            elif exact_priority == ExactMatchPriority.EXACT_MODEL and "model" not in matched_fields:
+                matched_fields.append("model")
+            elif exact_priority == ExactMatchPriority.EXACT_NAME and "product_name" not in matched_fields:
+                matched_fields.append("product_name")
 
-            exact_boost = 0.0
-            if is_exact_sku:
-                exact_boost = 0.30
-                if "sku" not in matched_fields:
-                    matched_fields.append("sku")
-            elif is_exact_model:
-                exact_boost = 0.25
-                if "model" not in matched_fields:
-                    matched_fields.append("model")
-            elif is_exact_name:
-                exact_boost = 0.15
-                if "product_name" not in matched_fields:
-                    matched_fields.append("product_name")
-
-            base_hybrid_score = (0.50 * kw_score) + (0.50 * sem_score)
-            final_hybrid_score = round(min(1.0000, base_hybrid_score + exact_boost), 4)
+            final_hybrid_score = SearchRankingService.fuse_scores(
+                kw_score, sem_score, query_intent, exact_priority
+            )
 
             # Match Type Classification
-            if is_exact_sku or is_exact_model or is_exact_name:
+            if exact_priority != ExactMatchPriority.NONE:
                 match_type = "exact"
             elif p.id in keyword_hits and p.id in vector_hits:
                 match_type = "hybrid"
@@ -304,6 +302,8 @@ class HybridSearchService:
                 keyword_score=kw_score,
                 similarity_score=sem_score,
                 match_type=match_type,
+                ranking_priority=int(exact_priority.value),
+                query_intent=query_intent.value,
                 matched_fields=matched_fields,
                 commerce_description=p.commerce_description or p.description,
                 short_description=None,
@@ -313,13 +313,21 @@ class HybridSearchService:
             )
             hybrid_results.append(item)
 
-        # 5. Primary Sort: hybrid_score DESC, Secondary Sort: quality_score DESC
-        hybrid_results.sort(key=lambda r: (r.hybrid_score, r.quality_score), reverse=True)
+        # 5. Deterministic Sort Sequence:
+        # Priority 1: exact_match_priority DESC
+        # Priority 2: hybrid_score DESC
+        # Priority 3: quality_score DESC
+        # Priority 4: product_id ASC (Deterministic String Tie-break)
+        hybrid_results.sort(
+            key=lambda r: (r.ranking_priority or 0, r.hybrid_score, r.quality_score),
+            reverse=True,
+        )
 
         return HybridSearchResponse(
             query=raw_query,
             search_mode="hybrid",
             degraded_mode=degraded_mode,
+            query_intent=query_intent.value,
             total=len(hybrid_results),
             results=hybrid_results[:limit],
         )
