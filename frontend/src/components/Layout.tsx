@@ -1,10 +1,11 @@
 import React from 'react';
 import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
+import { CatalogIQAssistant } from './assistant/CatalogIQAssistant';
 
 export const Layout: React.FC = () => {
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground relative">
       <Sidebar />
       <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         <header className="h-16 border-b px-8 flex items-center justify-between shrink-0 bg-card">
@@ -24,6 +25,8 @@ export const Layout: React.FC = () => {
           <Outlet />
         </div>
       </main>
+      <CatalogIQAssistant />
     </div>
   );
 };
+

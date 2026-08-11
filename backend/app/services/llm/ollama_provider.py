@@ -12,7 +12,7 @@ Performance & Reliability:
 import json
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -227,4 +227,57 @@ class OllamaProvider(BaseLLMProvider):
             return enrichment
         except Exception as e:
             raise EnrichmentError(f"Ollama enrichment response failed Pydantic validation: {e}") from e
+
+    def generate_assistant_response(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generates grounded assistant help response using Ollama API.
+        """
+        from app.services.assistant_prompts import (
+            CATALOGIQ_ASSISTANT_SYSTEM_PROMPT,
+            build_assistant_user_prompt,
+        )
+
+        user_prompt = build_assistant_user_prompt(message=message, history=history, context=context)
+        messages = [
+            {"role": "system", "content": CATALOGIQ_ASSISTANT_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        url = f"{self._base_url}/api/chat"
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": self._keep_alive,
+            "options": {"temperature": 0.3},
+        }
+
+        try:
+            with httpx.Client(timeout=float(self._timeout)) as client:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                raw = resp.json()["message"]["content"]
+                d = json.loads(raw)
+                return {
+                    "message": str(d.get("message") or ""),
+                    "suggestions": [str(s) for s in (d.get("suggestions") or []) if isinstance(s, (str, int, float))],
+                }
+        except Exception as e:
+            logger.warning(f"Ollama assistant call failed: {e}")
+            return {
+                "message": (
+                    "CatalogIQ Assistant is available to help you navigate document parsing, "
+                    "attribute extraction, confidence scoring, quality validation, and hybrid search."
+                ),
+                "suggestions": [
+                    "How do I upload a catalog?",
+                    "How does search work?",
+                    "What does product quality score mean?",
+                ],
+            }
+
 

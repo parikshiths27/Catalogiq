@@ -290,3 +290,34 @@ class BaseLLMProvider(ABC):
         """
         ...
 
+    def generate_assistant_response(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate grounded assistant help response for CatalogIQ operating questions.
+
+        Args:
+            message: User query or prompt.
+            history: Optional conversation turns list.
+            context: Optional UI context (page, query, mode, product_id, etc.).
+
+        Returns:
+            Dict containing 'message' (str) and 'suggestions' (List[str]).
+        """
+        return {
+            "message": (
+                "CatalogIQ Assistant is available to help you navigate document parsing, "
+                "attribute extraction, confidence scoring, quality validation, and hybrid search."
+            ),
+            "suggestions": [
+                "How do I upload a catalog?",
+                "How does search work?",
+                "What does product quality score mean?",
+            ],
+        }
+
+
+

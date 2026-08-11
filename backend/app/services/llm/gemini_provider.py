@@ -207,3 +207,59 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as e:
             raise EnrichmentError(f"Gemini enrichment response failed Pydantic validation: {e}") from e
 
+    def generate_assistant_response(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generates grounded CatalogIQ Help Center response using Google Gemini.
+        """
+        from app.services.assistant_prompts import (
+            CATALOGIQ_ASSISTANT_SYSTEM_PROMPT,
+            build_assistant_user_prompt,
+        )
+
+        user_prompt = build_assistant_user_prompt(message=message, history=history, context=context)
+        full_prompt = f"{CATALOGIQ_ASSISTANT_SYSTEM_PROMPT}\n\n{user_prompt}"
+
+        logger.info(f"Sending assistant request to Gemini model: {self._model}")
+
+        try:
+            response = self._client.models.generate_content(
+                model=self._model,
+                contents=full_prompt,
+                config=self._types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.3,
+                    max_output_tokens=2048,
+                ),
+            )
+            raw_content = response.text
+        except Exception as e:
+            logger.error(f"Gemini assistant call failure: {e}")
+            raise RuntimeError(f"Gemini assistant call failed: {e}") from e
+
+        try:
+            raw_dict = json.loads(raw_content)
+            res_msg = str(raw_dict.get("message") or "")
+            res_sug = raw_dict.get("suggestions") or []
+            if not isinstance(res_sug, list):
+                res_sug = []
+            return {
+                "message": res_msg,
+                "suggestions": [str(s) for s in res_sug if isinstance(s, (str, int, float))],
+            }
+        except Exception as e:
+            logger.warning(f"Failed to parse JSON assistant output from Gemini, returning fallback text: {e}")
+            return {
+                "message": raw_content,
+                "suggestions": [
+                    "How do I upload a catalog?",
+                    "How does search work?",
+                    "What does quality score mean?",
+                ],
+            }
+
+

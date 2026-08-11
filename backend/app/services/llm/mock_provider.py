@@ -159,3 +159,58 @@ class MockProvider(BaseLLMProvider):
             confidence=0.92,
         )
 
+    def generate_assistant_response(
+        self,
+        message: str,
+        history: Any = None,
+        context: Any = None,
+    ) -> Dict[str, Any]:
+        """
+        Mock assistant response for automated tests.
+        """
+        msg_lower = (message or "").lower()
+        page_ctx = (context or {}).get("page", "") if isinstance(context, dict) else ""
+
+        if "upload" in msg_lower or page_ctx == "upload":
+            return {
+                "message": (
+                    "To upload a document in CatalogIQ:\n"
+                    "1. Navigate to the **Upload Page** (`/upload`).\n"
+                    "2. Drag and drop your technical catalog PDF (up to 50MB).\n"
+                    "3. Click **Start Ingestion**. CatalogIQ automatically parses, extracts, validates, enriches, and indexes the catalog items."
+                ),
+                "suggestions": [
+                    "What happens after parsing?",
+                    "Why is my document still processing?",
+                    "How does extraction work?",
+                ],
+            }
+
+        if "search" in msg_lower or page_ctx == "search":
+            return {
+                "message": (
+                    "CatalogIQ Search operates in three modes:\n"
+                    "1. **Hybrid Search** (Default): Combines PostgreSQL lexical keyword search with Qdrant vector semantic search.\n"
+                    "2. **Semantic Search**: Vector similarity search using FastEmbed (`BAAI/bge-small-en-v1.5`).\n"
+                    "3. **Keyword Search**: Exact and substring PostgreSQL matching on SKU, model, name, and attributes."
+                ),
+                "suggestions": [
+                    "What does the relevance score mean?",
+                    "What are exact match priorities?",
+                    "How do facet filters work?",
+                ],
+            }
+
+        return {
+            "message": (
+                "CatalogIQ is an AI-powered Product Intelligence platform. "
+                "I can help you understand document processing, extraction, validation quality scores, multi-source reconciliation, and hybrid search."
+            ),
+            "suggestions": [
+                "How do I upload a catalog?",
+                "How does search work?",
+                "What does product quality score mean?",
+            ],
+        }
+
+
