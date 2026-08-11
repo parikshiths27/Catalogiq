@@ -17,6 +17,7 @@ from app.services.indexing import IndexingService
 from app.services.qdrant import QdrantService
 from app.services.keyword_search import KeywordSearchService, KeywordSearchResponse
 from app.services.hybrid_search import HybridSearchService, HybridSearchResponse
+from app.services.facets import FacetAggregationService, FacetSearchResponse
 
 router = APIRouter(prefix="/search")
 
@@ -44,15 +45,29 @@ class SearchResponse(BaseModel):
     results: List[SearchResultItem]
 
 
+def validate_quality_range(min_val: Optional[float], max_val: Optional[float]):
+    if min_val is not None:
+        if min_val < 0.0 or min_val > 100.0:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="min_quality_score must be between 0 and 100")
+    if max_val is not None:
+        if max_val < 0.0 or max_val > 100.0:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="max_quality_score must be between 0 and 100")
+    if min_val is not None and max_val is not None:
+        if min_val > max_val:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="min_quality_score cannot be greater than max_quality_score")
+
+
 @router.get("", response_model=Any)
 @router.get("/", response_model=Any)
 def search_products(
     q: str = Query(..., description="Natural language search query"),
     limit: int = Query(10, ge=1, le=100, description="Maximum number of search results to return"),
-    category: Optional[str] = Query(None, description="Filter by category"),
-    brand: Optional[str] = Query(None, description="Filter by brand/manufacturer"),
+    category: Optional[str] = Query(None, description="Filter by category (scalar or comma-separated)"),
+    brand: Optional[str] = Query(None, description="Filter by brand/manufacturer (scalar or comma-separated)"),
     product_status: Optional[str] = Query(None, alias="status", description="Filter by product status"),
     min_quality_score: Optional[float] = Query(None, description="Filter by minimum quality score"),
+    max_quality_score: Optional[float] = Query(None, description="Filter by maximum quality score"),
+    subcategory: Optional[str] = Query(None, description="Filter by subcategory"),
     mode: Optional[str] = Query("semantic", description="Search mode: 'semantic', 'keyword', or 'hybrid'"),
     session: Session = Depends(get_session),
 ):
@@ -60,6 +75,8 @@ def search_products(
     Search endpoint supporting 'semantic' (default), 'keyword', or 'hybrid' modes.
     Default mode 'semantic' maintains 100% Phase 6 backward compatibility.
     """
+    validate_quality_range(min_quality_score, max_quality_score)
+
     if not q or not q.strip():
         if mode == "hybrid":
             return HybridSearchResponse(query=q or "", search_mode="hybrid", total=0, results=[])
@@ -76,6 +93,8 @@ def search_products(
             brand=brand,
             product_status=product_status,
             min_quality_score=min_quality_score,
+            max_quality_score=max_quality_score,
+            subcategory=subcategory,
         )
     elif mode == "keyword":
         keyword_service = KeywordSearchService(session)
@@ -86,6 +105,8 @@ def search_products(
             brand=brand,
             product_status=product_status,
             min_quality_score=min_quality_score,
+            max_quality_score=max_quality_score,
+            subcategory=subcategory,
         )
 
     # 1. Embed query
@@ -187,6 +208,37 @@ def search_products(
     )
 
 
+@router.get("/facets", response_model=FacetSearchResponse)
+def search_facets_endpoint(
+    q: Optional[str] = Query(None, description="Search query string"),
+    category: Optional[str] = Query(None, description="Filter by category (scalar or comma-separated)"),
+    brand: Optional[str] = Query(None, description="Filter by brand/manufacturer (scalar or comma-separated)"),
+    product_status: Optional[str] = Query(None, alias="status", description="Filter by product status"),
+    subcategory: Optional[str] = Query(None, description="Filter by subcategory"),
+    min_quality_score: Optional[float] = Query(None, description="Minimum quality score filter"),
+    max_quality_score: Optional[float] = Query(None, description="Maximum quality score filter"),
+    session: Session = Depends(get_session),
+):
+    """
+    Dedicated read-only endpoint returning disjunctive facet aggregations for catalog search context.
+    """
+    validate_quality_range(min_quality_score, max_quality_score)
+    facet_service = FacetAggregationService(session)
+    facets = facet_service.compute_facets(
+        query=q,
+        category=category,
+        brand=brand,
+        subcategory=subcategory,
+        product_status=product_status,
+        min_quality_score=min_quality_score,
+        max_quality_score=max_quality_score,
+    )
+    return FacetSearchResponse(
+        query=q or "",
+        facets=facets,
+    )
+
+
 @router.get("/keyword", response_model=KeywordSearchResponse)
 def search_products_keyword(
     q: str = Query(..., description="Text keyword search query"),
@@ -195,13 +247,14 @@ def search_products_keyword(
     brand: Optional[str] = Query(None, description="Filter by brand/manufacturer"),
     product_status: Optional[str] = Query(None, alias="status", description="Filter by product status"),
     min_quality_score: Optional[float] = Query(None, description="Filter by minimum quality score"),
+    max_quality_score: Optional[float] = Query(None, description="Filter by maximum quality score"),
+    subcategory: Optional[str] = Query(None, description="Filter by subcategory"),
     session: Session = Depends(get_session),
 ):
     """
     Normal/lexical PostgreSQL keyword search endpoint.
-    Performs case-insensitive exact and substring matching on product identity, SKU, model,
-    brand, category, and technical specifications with deterministic relevance scoring.
     """
+    validate_quality_range(min_quality_score, max_quality_score)
     keyword_service = KeywordSearchService(session)
     return keyword_service.search_keywords(
         query=q,
@@ -210,6 +263,8 @@ def search_products_keyword(
         brand=brand,
         product_status=product_status,
         min_quality_score=min_quality_score,
+        max_quality_score=max_quality_score,
+        subcategory=subcategory,
     )
 
 
@@ -221,11 +276,14 @@ def search_products_hybrid(
     brand: Optional[str] = Query(None, description="Filter by brand/manufacturer"),
     product_status: Optional[str] = Query(None, alias="status", description="Filter by product status"),
     min_quality_score: Optional[float] = Query(None, description="Filter by minimum quality score"),
+    max_quality_score: Optional[float] = Query(None, description="Filter by maximum quality score"),
+    subcategory: Optional[str] = Query(None, description="Filter by subcategory"),
     session: Session = Depends(get_session),
 ):
     """
     Dedicated Hybrid Search endpoint combining PostgreSQL keyword search and Qdrant semantic vector search.
     """
+    validate_quality_range(min_quality_score, max_quality_score)
     hybrid_service = HybridSearchService(session)
     return hybrid_service.search_hybrid(
         query=q,
@@ -234,6 +292,8 @@ def search_products_hybrid(
         brand=brand,
         product_status=product_status,
         min_quality_score=min_quality_score,
+        max_quality_score=max_quality_score,
+        subcategory=subcategory,
     )
 
 

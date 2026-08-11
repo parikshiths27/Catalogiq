@@ -186,32 +186,53 @@ class QdrantService:
             return 0
 
     def _build_rest_filter(self, filters: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Constructs Qdrant REST payload filter dictionary."""
+        """Constructs Qdrant REST payload filter dictionary supporting lists and range bounds."""
         if not filters:
             return None
 
         must_conditions = []
 
-        if filters.get("category"):
-            must_conditions.append(
-                {"key": "category", "match": {"value": str(filters["category"])}}
-            )
-        if filters.get("brand") or filters.get("manufacturer"):
-            brand_val = str(filters.get("brand") or filters.get("manufacturer"))
-            must_conditions.append(
-                {"key": "manufacturer", "match": {"value": brand_val}}
-            )
-        if filters.get("status"):
-            must_conditions.append(
-                {"key": "status", "match": {"value": str(filters["status"])}}
-            )
+        # Category
+        cat_val = filters.get("category")
+        if cat_val:
+            if isinstance(cat_val, list):
+                if len(cat_val) == 1:
+                    must_conditions.append({"key": "category", "match": {"value": str(cat_val[0])}})
+                elif len(cat_val) > 1:
+                    must_conditions.append({"key": "category", "match": {"any": [str(c) for c in cat_val]}})
+            else:
+                must_conditions.append({"key": "category", "match": {"value": str(cat_val)}})
+
+        # Brand / Manufacturer
+        brand_val = filters.get("brand") or filters.get("manufacturer")
+        if brand_val:
+            if isinstance(brand_val, list):
+                if len(brand_val) == 1:
+                    must_conditions.append({"key": "manufacturer", "match": {"value": str(brand_val[0])}})
+                elif len(brand_val) > 1:
+                    must_conditions.append({"key": "manufacturer", "match": {"any": [str(b) for b in brand_val]}})
+            else:
+                must_conditions.append({"key": "manufacturer", "match": {"value": str(brand_val)}})
+
+        # Status
+        status_val = filters.get("status")
+        if status_val:
+            if isinstance(status_val, list):
+                if len(status_val) == 1:
+                    must_conditions.append({"key": "status", "match": {"value": str(status_val[0])}})
+                elif len(status_val) > 1:
+                    must_conditions.append({"key": "status", "match": {"any": [str(s) for s in status_val]}})
+            else:
+                must_conditions.append({"key": "status", "match": {"value": str(status_val)}})
+
+        # Quality score range
+        range_cond = {}
         if filters.get("min_quality_score") is not None:
-            must_conditions.append(
-                {
-                    "key": "quality_score",
-                    "range": {"gte": float(filters["min_quality_score"])},
-                }
-            )
+            range_cond["gte"] = float(filters["min_quality_score"])
+        if filters.get("max_quality_score") is not None:
+            range_cond["lte"] = float(filters["max_quality_score"])
+        if range_cond:
+            must_conditions.append({"key": "quality_score", "range": range_cond})
 
         if not must_conditions:
             return None

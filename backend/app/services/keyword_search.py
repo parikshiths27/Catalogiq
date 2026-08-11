@@ -48,24 +48,15 @@ class KeywordSearchService:
         self,
         query: str,
         limit: int = 10,
-        category: Optional[str] = None,
-        brand: Optional[str] = None,
-        product_status: Optional[str] = None,
+        category: Any = None,
+        brand: Any = None,
+        product_status: Any = None,
         min_quality_score: Optional[float] = None,
+        max_quality_score: Optional[float] = None,
+        subcategory: Any = None,
     ) -> KeywordSearchResponse:
         """
         Performs keyword search against PostgreSQL product catalog.
-
-        Args:
-            query: User search text query string.
-            limit: Maximum search results to return.
-            category: Optional filter for product category.
-            brand: Optional filter for brand / manufacturer.
-            product_status: Optional filter for product status (draft, needs_review, verified).
-            min_quality_score: Optional filter for minimum quality score threshold.
-
-        Returns:
-            KeywordSearchResponse containing query, total count, and ranked results.
         """
         if not query or not query.strip():
             return KeywordSearchResponse(query=query or "", total=0, results=[])
@@ -74,16 +65,37 @@ class KeywordSearchService:
         query_lower = raw_query.lower()
         like_pattern = f"%{raw_query}%"
 
+        def _parse_list(val: Any) -> List[str]:
+            if not val:
+                return []
+            if isinstance(val, list):
+                return [s.strip() for s in val if isinstance(s, str) and s.strip()]
+            if isinstance(val, str):
+                return [s.strip() for s in val.split(",") if s.strip()]
+            return []
+
         # 1. Base Filter Conditions for Product
         product_filters = []
-        if category and category.strip():
-            product_filters.append(func.lower(Product.category) == category.strip().lower())
-        if brand and brand.strip():
-            product_filters.append(func.lower(Product.brand) == brand.strip().lower())
-        if product_status and product_status.strip():
-            product_filters.append(func.lower(Product.status) == product_status.strip().lower())
+        cat_list = _parse_list(category)
+        if cat_list:
+            product_filters.append(func.lower(Product.category).in_([c.lower() for c in cat_list]))
+
+        brand_list = _parse_list(brand)
+        if brand_list:
+            product_filters.append(func.lower(Product.brand).in_([b.lower() for b in brand_list]))
+
+        status_list = _parse_list(product_status)
+        if status_list:
+            product_filters.append(func.lower(Product.status).in_([s.lower() for s in status_list]))
+
+        subcat_list = _parse_list(subcategory)
+        if subcat_list:
+            product_filters.append(func.lower(Product.subcategory).in_([sc.lower() for sc in subcat_list]))
+
         if min_quality_score is not None:
             product_filters.append(Product.quality_score >= float(min_quality_score))
+        if max_quality_score is not None:
+            product_filters.append(Product.quality_score <= float(max_quality_score))
 
         # 2. Query for Product IDs matching Product fields
         product_text_match_condition = or_(

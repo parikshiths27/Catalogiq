@@ -68,24 +68,15 @@ class HybridSearchService:
         self,
         query: str,
         limit: int = 10,
-        category: Optional[str] = None,
-        brand: Optional[str] = None,
-        product_status: Optional[str] = None,
+        category: Any = None,
+        brand: Any = None,
+        product_status: Any = None,
         min_quality_score: Optional[float] = None,
+        max_quality_score: Optional[float] = None,
+        subcategory: Any = None,
     ) -> HybridSearchResponse:
         """
         Executes hybrid search across keyword and vector engines with candidate pool fusion.
-
-        Args:
-            query: User search text query.
-            limit: Top N results to return.
-            category: Optional category filter.
-            brand: Optional brand/manufacturer filter.
-            product_status: Optional status filter.
-            min_quality_score: Optional quality score threshold filter.
-
-        Returns:
-            HybridSearchResponse containing merged, ranked results and degradation metadata.
         """
         if not query or not query.strip():
             return HybridSearchResponse(
@@ -100,6 +91,20 @@ class HybridSearchService:
         query_norm = raw_query.lower()
         k_candidate = max(30, limit * 3)
 
+        def _parse_list(val: Any) -> List[str]:
+            if not val:
+                return []
+            if isinstance(val, list):
+                return [s.strip() for s in val if isinstance(s, str) and s.strip()]
+            if isinstance(val, str):
+                return [s.strip() for s in val.split(",") if s.strip()]
+            return []
+
+        cat_list = _parse_list(category)
+        brand_list = _parse_list(brand)
+        status_list = _parse_list(product_status)
+        subcat_list = _parse_list(subcategory)
+
         keyword_hits: Dict[uuid.UUID, Tuple[float, List[str]]] = {}
         vector_hits: Dict[uuid.UUID, float] = {}
 
@@ -112,10 +117,12 @@ class HybridSearchService:
             kw_res = self.keyword_service.search_keywords(
                 query=raw_query,
                 limit=k_candidate,
-                category=category,
-                brand=brand,
-                product_status=product_status,
+                category=cat_list,
+                brand=brand_list,
+                product_status=status_list,
                 min_quality_score=min_quality_score,
+                max_quality_score=max_quality_score,
+                subcategory=subcat_list,
             )
             for item in kw_res.results:
                 try:
@@ -141,14 +148,16 @@ class HybridSearchService:
 
         if query_vector is not None and not vector_failed:
             filters = {}
-            if category:
-                filters["category"] = category
-            if brand:
-                filters["brand"] = brand
-            if product_status:
-                filters["status"] = product_status
+            if cat_list:
+                filters["category"] = cat_list
+            if brand_list:
+                filters["brand"] = brand_list
+            if status_list:
+                filters["status"] = status_list
             if min_quality_score is not None:
                 filters["min_quality_score"] = min_quality_score
+            if max_quality_score is not None:
+                filters["max_quality_score"] = max_quality_score
 
             try:
                 hits = self.qdrant_service.search_vectors(
@@ -187,14 +196,18 @@ class HybridSearchService:
 
         # 3. Batch PostgreSQL Hydration (Union of candidate product IDs)
         product_filters = [Product.id.in_(candidate_ids)]
-        if category and category.strip():
-            product_filters.append(func.lower(Product.category) == category.strip().lower())
-        if brand and brand.strip():
-            product_filters.append(func.lower(Product.brand) == brand.strip().lower())
-        if product_status and product_status.strip():
-            product_filters.append(func.lower(Product.status) == product_status.strip().lower())
+        if cat_list:
+            product_filters.append(func.lower(Product.category).in_([c.lower() for c in cat_list]))
+        if brand_list:
+            product_filters.append(func.lower(Product.brand).in_([b.lower() for b in brand_list]))
+        if status_list:
+            product_filters.append(func.lower(Product.status).in_([s.lower() for s in status_list]))
+        if subcat_list:
+            product_filters.append(func.lower(Product.subcategory).in_([sc.lower() for sc in subcat_list]))
         if min_quality_score is not None:
             product_filters.append(Product.quality_score >= float(min_quality_score))
+        if max_quality_score is not None:
+            product_filters.append(Product.quality_score <= float(max_quality_score))
 
         candidate_products = self.session.exec(
             select(Product).where(*product_filters)

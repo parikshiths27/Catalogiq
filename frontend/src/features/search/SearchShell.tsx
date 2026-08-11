@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Loader2, Sparkles, Filter, ExternalLink, AlertCircle, Database, CheckCircle2, ShieldAlert } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Search, Loader2, Sparkles, Filter, ExternalLink, AlertCircle, Database, ShieldAlert, X, SlidersHorizontal } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 interface AttributeItem {
   attribute_name: string;
@@ -19,7 +19,11 @@ interface SearchResultItem {
   manufacturer: string;
   model?: string;
   quality_score: number;
-  similarity_score: number;
+  similarity_score?: number;
+  keyword_score?: number;
+  hybrid_score?: number;
+  match_type?: string;
+  matched_fields?: string[];
   status: string;
   commerce_description?: string;
   short_description?: string;
@@ -31,36 +35,131 @@ interface SearchResultItem {
 interface SearchResponse {
   query: string;
   total: number;
+  search_mode?: string;
+  degraded_mode?: string | null;
   results: SearchResultItem[];
+}
+
+interface FacetCountItem {
+  value: string;
+  count: number;
+}
+
+interface QualityScoreRangeItem {
+  label: string;
+  min: number;
+  max: number;
+  count: number;
+}
+
+interface DynamicAttributeFacet {
+  attribute_name: string;
+  display_name: string;
+  data_type: string;
+  values: FacetCountItem[];
+}
+
+interface FacetPayload {
+  categories: FacetCountItem[];
+  brands: FacetCountItem[];
+  subcategories: FacetCountItem[];
+  statuses: FacetCountItem[];
+  quality_score_ranges: QualityScoreRangeItem[];
+  attributes: DynamicAttributeFacet[];
+}
+
+interface FacetSearchResponse {
+  query: string;
+  facets: FacetPayload;
 }
 
 export const SearchShell: React.FC = () => {
   const navigate = useNavigate();
-  const [query, setQuery] = useState<string>('industrial induction motors around 10 kW');
-  const [categoryFilter, setCategoryFilter] = useState<string>('');
-  const [brandFilter, setBrandFilter] = useState<string>('');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // URL State initialization
+  const initialQuery = searchParams.get('q') || 'industrial induction motors around 10 kW';
+  const initialCategory = searchParams.get('category') ? searchParams.get('category')!.split(',').filter(Boolean) : [];
+  const initialBrand = searchParams.get('brand') ? searchParams.get('brand')!.split(',').filter(Boolean) : [];
+  const initialStatus = searchParams.get('status') ? searchParams.get('status')!.split(',').filter(Boolean) : [];
+  const initialMinQuality = searchParams.get('min_quality_score') ? parseFloat(searchParams.get('min_quality_score')!) : undefined;
+  const initialMaxQuality = searchParams.get('max_quality_score') ? parseFloat(searchParams.get('max_quality_score')!) : undefined;
+  const initialMode = searchParams.get('mode') || 'hybrid';
+
+  const [query, setQuery] = useState<string>(initialQuery);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>(initialCategory);
+  const [selectedBrands, setSelectedBrands] = useState<string[]>(initialBrand);
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(initialStatus);
+  const [minQualityScore, setMinQualityScore] = useState<number | undefined>(initialMinQuality);
+  const [maxQualityScore, setMaxQualityScore] = useState<number | undefined>(initialMaxQuality);
+  const [searchMode, setSearchMode] = useState<string>(initialMode);
   const [limit, setLimit] = useState<number>(10);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [searchData, setSearchData] = useState<SearchResponse | null>(null);
+  const [facetData, setFacetData] = useState<FacetPayload | null>(null);
+  const [showFiltersSidebar, setShowFiltersSidebar] = useState<boolean>(true);
 
-  // Perform search
-  const handleSearch = async (overrideQuery?: string) => {
+  // Sync parameters with URL
+  const syncUrlParams = (
+    q: string,
+    cats: string[],
+    brs: string[],
+    stats: string[],
+    minQ?: number,
+    maxQ?: number,
+    modeStr?: string
+  ) => {
+    const params = new URLSearchParams();
+    if (q.trim()) params.set('q', q.trim());
+    if (cats.length) params.set('category', cats.join(','));
+    if (brs.length) params.set('brand', brs.join(','));
+    if (stats.length) params.set('status', stats.join(','));
+    if (minQ !== undefined && !isNaN(minQ)) params.set('min_quality_score', minQ.toString());
+    if (maxQ !== undefined && !isNaN(maxQ)) params.set('max_quality_score', maxQ.toString());
+    if (modeStr) params.set('mode', modeStr);
+
+    setSearchParams(params);
+  };
+
+  // Perform search and facet retrieval
+  const handleSearch = async (
+    overrideQuery?: string,
+    overrideCats?: string[],
+    overrideBrands?: string[],
+    overrideStatuses?: string[],
+    overrideMinQ?: number,
+    overrideMaxQ?: number,
+    overrideMode?: string
+  ) => {
     const q = overrideQuery !== undefined ? overrideQuery : query;
+    const cats = overrideCats !== undefined ? overrideCats : selectedCategories;
+    const brs = overrideBrands !== undefined ? overrideBrands : selectedBrands;
+    const stats = overrideStatuses !== undefined ? overrideStatuses : selectedStatuses;
+    const minQ = overrideMinQ !== undefined ? overrideMinQ : minQualityScore;
+    const maxQ = overrideMaxQ !== undefined ? overrideMaxQ : maxQualityScore;
+    const m = overrideMode !== undefined ? overrideMode : searchMode;
+
     if (!q.trim()) return;
 
     setLoading(true);
     setError(null);
+    syncUrlParams(q, cats, brs, stats, minQ, maxQ, m);
 
     try {
-      const params = new URLSearchParams();
-      params.append('q', q.trim());
-      params.append('limit', limit.toString());
-      if (categoryFilter) params.append('category', categoryFilter);
-      if (brandFilter) params.append('brand', brandFilter);
+      // 1. Fetch Search Results
+      const searchUrlParams = new URLSearchParams();
+      searchUrlParams.append('q', q.trim());
+      searchUrlParams.append('limit', limit.toString());
+      if (cats.length) searchUrlParams.append('category', cats.join(','));
+      if (brs.length) searchUrlParams.append('brand', brs.join(','));
+      if (stats.length) searchUrlParams.append('status', stats.join(','));
+      if (minQ !== undefined && !isNaN(minQ)) searchUrlParams.append('min_quality_score', minQ.toString());
+      if (maxQ !== undefined && !isNaN(maxQ)) searchUrlParams.append('max_quality_score', maxQ.toString());
+      if (m) searchUrlParams.append('mode', m);
 
-      const res = await fetch(`/api/v1/search?${params.toString()}`);
+      const res = await fetch(`/api/v1/search?${searchUrlParams.toString()}`);
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.detail || `Search failed with status ${res.status}`);
@@ -68,39 +167,117 @@ export const SearchShell: React.FC = () => {
 
       const data: SearchResponse = await res.json();
       setSearchData(data);
+
+      // 2. Fetch Facets
+      const facetUrlParams = new URLSearchParams();
+      facetUrlParams.append('q', q.trim());
+      if (cats.length) facetUrlParams.append('category', cats.join(','));
+      if (brs.length) facetUrlParams.append('brand', brs.join(','));
+      if (stats.length) facetUrlParams.append('status', stats.join(','));
+      if (minQ !== undefined && !isNaN(minQ)) facetUrlParams.append('min_quality_score', minQ.toString());
+      if (maxQ !== undefined && !isNaN(maxQ)) facetUrlParams.append('max_quality_score', maxQ.toString());
+
+      const facetRes = await fetch(`/api/v1/search/facets?${facetUrlParams.toString()}`);
+      if (facetRes.ok) {
+        const fData: FacetSearchResponse = await facetRes.json();
+        setFacetData(fData.facets);
+      }
     } catch (err: any) {
-      console.error('Semantic search error:', err);
-      setError(err.message || 'An error occurred while connecting to the semantic search service.');
+      console.error('Search error:', err);
+      setError(err.message || 'An error occurred while connecting to the search service.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Perform initial search on mount with default query
+  // Perform initial search on mount
   useEffect(() => {
-    handleSearch('industrial induction motors around 10 kW');
+    handleSearch();
   }, []);
+
+  const toggleCategory = (cat: string) => {
+    const next = selectedCategories.includes(cat)
+      ? selectedCategories.filter((c) => c !== cat)
+      : [...selectedCategories, cat];
+    setSelectedCategories(next);
+    handleSearch(query, next, selectedBrands, selectedStatuses, minQualityScore, maxQualityScore, searchMode);
+  };
+
+  const toggleBrand = (brand: string) => {
+    const next = selectedBrands.includes(brand)
+      ? selectedBrands.filter((b) => b !== brand)
+      : [...selectedBrands, brand];
+    setSelectedBrands(next);
+    handleSearch(query, selectedCategories, next, selectedStatuses, minQualityScore, maxQualityScore, searchMode);
+  };
+
+  const toggleStatus = (st: string) => {
+    const next = selectedStatuses.includes(st)
+      ? selectedStatuses.filter((s) => s !== st)
+      : [...selectedStatuses, st];
+    setSelectedStatuses(next);
+    handleSearch(query, selectedCategories, selectedBrands, next, minQualityScore, maxQualityScore, searchMode);
+  };
+
+  const handleClearAllFilters = () => {
+    setSelectedCategories([]);
+    setSelectedBrands([]);
+    setSelectedStatuses([]);
+    setMinQualityScore(undefined);
+    setMaxQualityScore(undefined);
+    handleSearch(query, [], [], [], undefined, undefined, searchMode);
+  };
 
   const exampleQueries = [
     'industrial induction motors around 10 kW',
     'high RPM induction motors with IP55 protection',
     'motors suitable for continuous duty pumps',
+    'MX500-230',
   ];
+
+  const hasActiveFilters =
+    selectedCategories.length > 0 ||
+    selectedBrands.length > 0 ||
+    selectedStatuses.length > 0 ||
+    minQualityScore !== undefined ||
+    maxQualityScore !== undefined;
 
   return (
     <div className="space-y-6 text-slate-100">
       {/* Header */}
-      <div>
-        <h2 className="text-3xl font-bold tracking-tight text-white flex items-center gap-2">
-          <Sparkles className="w-7 h-7 text-indigo-400" />
-          <span>Semantic Search & Vector Retrieval</span>
-        </h2>
-        <p className="text-sm text-slate-400 mt-1">
-          Query validated catalog intelligence using natural language vector embeddings and Qdrant vector retrieval.
-        </p>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-3xl font-bold tracking-tight text-white flex items-center gap-2">
+            <Sparkles className="w-7 h-7 text-indigo-400" />
+            <span>Catalog IQ Hybrid Search & Discovery</span>
+          </h2>
+          <p className="text-sm text-slate-400 mt-1">
+            Unified semantic, lexical keyword, and faceted filtering search across industrial product catalogs.
+          </p>
+        </div>
+
+        {/* Mode Selector */}
+        <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs self-start md:self-auto">
+          {['hybrid', 'semantic', 'keyword'].map((m) => (
+            <button
+              key={m}
+              onClick={() => {
+                setSearchMode(m);
+                handleSearch(query, selectedCategories, selectedBrands, selectedStatuses, minQualityScore, maxQualityScore, m);
+              }}
+              className={`px-3 py-1.5 rounded-md font-medium capitalize transition ${
+                searchMode === m
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Search Bar & Controls */}
+      {/* Search Input Bar & Controls */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl space-y-4">
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
@@ -109,229 +286,359 @@ export const SearchShell: React.FC = () => {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSearch();
-              }}
-              placeholder="e.g. industrial induction motors around 10 kW for continuous operation"
-              className="w-full pl-11 pr-4 py-3 bg-slate-950 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition font-medium"
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              placeholder="Search by product name, SKU, model, or natural language specs..."
+              className="w-full bg-slate-950 border border-slate-700 text-white rounded-lg pl-11 pr-4 py-3 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
             />
           </div>
-          <button
-            onClick={() => handleSearch()}
-            disabled={loading}
-            className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold rounded-lg text-sm transition shadow-lg flex items-center justify-center gap-2 min-w-[120px]"
-          >
-            {loading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Searching...</span>
-              </>
-            ) : (
-              <>
-                <Search className="w-4 h-4" />
-                <span>Search</span>
-              </>
-            )}
-          </button>
-        </div>
 
-        {/* Quick Example Query Pills */}
-        <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
-          <span className="text-slate-400 font-mono flex items-center gap-1">
-            <span>Try:</span>
-          </span>
-          {exampleQueries.map((ex, idx) => (
+          <div className="flex gap-2">
             <button
-              key={idx}
-              onClick={() => {
-                setQuery(ex);
-                handleSearch(ex);
-              }}
-              className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-indigo-300 rounded-full border border-slate-700 transition font-mono text-[11px]"
+              onClick={() => handleSearch()}
+              disabled={loading}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2 disabled:opacity-50 min-w-[120px]"
             >
-              "{ex}"
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              <span>Search</span>
             </button>
-          ))}
+
+            <button
+              onClick={() => setShowFiltersSidebar(!showFiltersSidebar)}
+              className={`px-4 py-3 rounded-lg border text-sm font-medium transition flex items-center gap-2 ${
+                showFiltersSidebar
+                  ? 'bg-slate-800 border-indigo-500 text-indigo-300'
+                  : 'bg-slate-950 border-slate-700 text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <SlidersHorizontal className="w-4 h-4" />
+              <span>Filters</span>
+            </button>
+          </div>
         </div>
 
-        {/* Filters */}
-        <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-4 text-xs">
-          <div className="flex items-center gap-4 flex-wrap">
-            <span className="text-slate-400 font-medium flex items-center gap-1.5">
-              <Filter className="w-3.5 h-3.5 text-slate-400" /> Filters:
-            </span>
-
-            {/* Category Filter */}
-            <input
-              type="text"
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              placeholder="Category (e.g. Industrial Electric Motor)"
-              className="bg-slate-950 border border-slate-700 text-slate-200 px-3 py-1.5 rounded text-xs outline-none focus:border-indigo-500 min-w-[180px]"
-            />
-
-            {/* Brand Filter */}
-            <input
-              type="text"
-              value={brandFilter}
-              onChange={(e) => setBrandFilter(e.target.value)}
-              placeholder="Manufacturer / Brand"
-              className="bg-slate-950 border border-slate-700 text-slate-200 px-3 py-1.5 rounded text-xs outline-none focus:border-indigo-500 min-w-[150px]"
-            />
+        {/* Example Queries & Result Limit */}
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400 pt-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-slate-300">Try searching:</span>
+            {exampleQueries.map((eq, idx) => (
+              <button
+                key={idx}
+                onClick={() => {
+                  setQuery(eq);
+                  handleSearch(eq);
+                }}
+                className="bg-slate-950 hover:bg-slate-800 text-slate-300 hover:text-white px-3 py-1 rounded-md border border-slate-800 transition"
+              >
+                {eq}
+              </button>
+            ))}
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="text-slate-400">Limit:</span>
+            <span className="text-slate-400">Page size:</span>
             <select
               value={limit}
-              onChange={(e) => setLimit(Number(e.target.value))}
-              className="bg-slate-950 border border-slate-700 text-slate-200 px-2 py-1 rounded text-xs outline-none"
+              onChange={(e) => {
+                const newLimit = parseInt(e.target.value, 10);
+                setLimit(newLimit);
+                handleSearch(query, selectedCategories, selectedBrands, selectedStatuses, minQualityScore, maxQualityScore, searchMode);
+              }}
+              className="bg-slate-950 border border-slate-700 text-slate-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500"
             >
-              <option value={5}>5 results</option>
-              <option value={10}>10 results</option>
-              <option value={20}>20 results</option>
-              <option value={50}>50 results</option>
+              <option value={10}>10</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
             </select>
           </div>
         </div>
       </div>
 
-      {/* Loading State */}
-      {loading && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center text-slate-400 flex flex-col items-center justify-center space-y-3">
-          <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
-          <p className="text-sm font-medium">Generating query embedding & querying Qdrant vector index...</p>
+      {/* Active Filter Chips Bar */}
+      {hasActiveFilters && (
+        <div className="flex flex-wrap items-center gap-2 bg-slate-900/60 border border-slate-800 rounded-lg p-3 text-xs">
+          <span className="font-medium text-slate-400 flex items-center gap-1">
+            <Filter className="w-3.5 h-3.5 text-indigo-400" /> Active Filters:
+          </span>
+
+          {selectedCategories.map((c) => (
+            <span key={c} className="bg-indigo-950 border border-indigo-700 text-indigo-200 px-2.5 py-1 rounded-full flex items-center gap-1">
+              Cat: {c}
+              <X className="w-3 h-3 cursor-pointer hover:text-white" onClick={() => toggleCategory(c)} />
+            </span>
+          ))}
+
+          {selectedBrands.map((b) => (
+            <span key={b} className="bg-purple-950 border border-purple-700 text-purple-200 px-2.5 py-1 rounded-full flex items-center gap-1">
+              Brand: {b}
+              <X className="w-3 h-3 cursor-pointer hover:text-white" onClick={() => toggleBrand(b)} />
+            </span>
+          ))}
+
+          {selectedStatuses.map((s) => (
+            <span key={s} className="bg-emerald-950 border border-emerald-700 text-emerald-200 px-2.5 py-1 rounded-full flex items-center gap-1">
+              Status: {s}
+              <X className="w-3 h-3 cursor-pointer hover:text-white" onClick={() => toggleStatus(s)} />
+            </span>
+          ))}
+
+          {minQualityScore !== undefined && (
+            <span className="bg-amber-950 border border-amber-700 text-amber-200 px-2.5 py-1 rounded-full flex items-center gap-1">
+              Min Quality: {minQualityScore}%
+              <X
+                className="w-3 h-3 cursor-pointer hover:text-white"
+                onClick={() => {
+                  setMinQualityScore(undefined);
+                  handleSearch(query, selectedCategories, selectedBrands, selectedStatuses, undefined, maxQualityScore, searchMode);
+                }}
+              />
+            </span>
+          )}
+
+          <button onClick={handleClearAllFilters} className="text-slate-400 hover:text-white underline ml-auto text-xs">
+            Clear All
+          </button>
         </div>
       )}
 
-      {/* Error State */}
-      {error && !loading && (
-        <div className="bg-red-950/40 border border-red-800/80 rounded-xl p-6 text-red-200 flex items-start gap-4">
-          <AlertCircle className="w-6 h-6 text-red-400 shrink-0 mt-0.5" />
-          <div className="space-y-2">
-            <h4 className="font-semibold text-red-100">Search Request Error</h4>
-            <p className="text-xs text-red-300 font-mono">{error}</p>
-            <button
-              onClick={() => handleSearch()}
-              className="mt-2 px-3 py-1.5 bg-red-900 hover:bg-red-800 text-red-100 text-xs font-semibold rounded transition border border-red-700"
-            >
-              Retry Search
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Results View */}
-      {!loading && !error && searchData && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between px-1">
-            <p className="text-xs text-slate-400 font-mono">
-              Found <span className="text-indigo-400 font-bold">{searchData.total}</span> vector search match
-              {searchData.total === 1 ? '' : 'es'} for query: <span className="text-slate-200">"{searchData.query}"</span>
-            </p>
-          </div>
-
-          {searchData.results.length === 0 ? (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center text-slate-400 flex flex-col items-center justify-center space-y-3">
-              <Database className="w-10 h-10 text-slate-600" />
-              <h4 className="font-semibold text-slate-200 text-base">No Matching Products Found</h4>
-              <p className="text-xs max-w-md text-slate-400">
-                No vector search matches were retrieved. Ensure products are processed and indexed in Qdrant.
-              </p>
+      {/* Main Grid: Sidebar Filters + Results */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        {/* Sidebar Filters */}
+        {showFiltersSidebar && (
+          <div className="md:col-span-1 bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-6 self-start shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="font-semibold text-white flex items-center gap-2 text-sm">
+                <Filter className="w-4 h-4 text-indigo-400" />
+                <span>Facet Filters</span>
+              </h3>
+              {hasActiveFilters && (
+                <button onClick={handleClearAllFilters} className="text-xs text-indigo-400 hover:text-indigo-300">
+                  Reset
+                </button>
+              )}
             </div>
-          ) : (
-            <div className="space-y-4">
-              {searchData.results.map((item) => {
-                const simPct = Math.round(item.similarity_score * 100);
 
-                return (
-                  <div
-                    key={item.product_id}
-                    className="bg-slate-900 border border-slate-800 hover:border-indigo-500/50 rounded-xl p-6 shadow-xl transition space-y-4 group"
-                  >
-                    {/* Top Row: Title, SKU, Similarity Score */}
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-semibold px-2.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono">
-                            {item.manufacturer}
-                          </span>
-                          <span className="text-xs text-slate-400 font-mono">SKU: {item.sku}</span>
-                          <span className="text-xs text-slate-400 font-mono">Category: {item.category}</span>
-                        </div>
-                        <h3 className="text-xl font-bold text-white mt-1 group-hover:text-indigo-300 transition">
-                          {item.product_name}
-                        </h3>
+            {/* Category Facet */}
+            {facetData?.categories && facetData.categories.length > 0 && (
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Category</label>
+                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                  {facetData.categories.map((item) => (
+                    <label key={item.value} className="flex items-center justify-between text-xs text-slate-300 hover:text-white cursor-pointer py-1">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedCategories.includes(item.value)}
+                          onChange={() => toggleCategory(item.value)}
+                          className="rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="truncate max-w-[130px]">{item.value}</span>
                       </div>
+                      <span className="bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded text-[10px] font-mono">{item.count}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
 
-                      <div className="text-right shrink-0">
-                        <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-950 text-emerald-300 border border-emerald-800 rounded-full text-xs font-bold font-mono">
-                          <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Similarity: {simPct}%</span>
-                        </div>
-                        <div className="text-[11px] text-slate-400 font-mono mt-1">
-                          Quality: <span className="text-emerald-400 font-bold">{item.quality_score}/100</span>
-                        </div>
+            {/* Brand Facet */}
+            {facetData?.brands && facetData.brands.length > 0 && (
+              <div className="space-y-2 border-t border-slate-800 pt-3">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Brand / Manufacturer</label>
+                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                  {facetData.brands.map((item) => (
+                    <label key={item.value} className="flex items-center justify-between text-xs text-slate-300 hover:text-white cursor-pointer py-1">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedBrands.includes(item.value)}
+                          onChange={() => toggleBrand(item.value)}
+                          className="rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="truncate max-w-[130px]">{item.value}</span>
                       </div>
+                      <span className="bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded text-[10px] font-mono">{item.count}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Status Facet */}
+            {facetData?.statuses && facetData.statuses.length > 0 && (
+              <div className="space-y-2 border-t border-slate-800 pt-3">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Product Status</label>
+                <div className="space-y-1.5">
+                  {facetData.statuses.map((item) => (
+                    <label key={item.value} className="flex items-center justify-between text-xs text-slate-300 hover:text-white cursor-pointer py-1">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedStatuses.includes(item.value)}
+                          onChange={() => toggleStatus(item.value)}
+                          className="rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="capitalize">{item.value}</span>
+                      </div>
+                      <span className="bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded text-[10px] font-mono">{item.count}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Quality Score Range Filter */}
+            <div className="space-y-2 border-t border-slate-800 pt-3">
+              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Min Quality Score</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={minQualityScore !== undefined ? minQualityScore : ''}
+                  onChange={(e) => {
+                    const val = e.target.value ? parseFloat(e.target.value) : undefined;
+                    setMinQualityScore(val);
+                    handleSearch(query, selectedCategories, selectedBrands, selectedStatuses, val, maxQualityScore, searchMode);
+                  }}
+                  placeholder="Min %"
+                  className="w-full bg-slate-950 border border-slate-700 text-white rounded px-2 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            {/* Dynamic Attributes Facets */}
+            {facetData?.attributes && facetData.attributes.length > 0 && (
+              <div className="space-y-4 border-t border-slate-800 pt-3">
+                <label className="text-xs font-semibold text-indigo-400 uppercase tracking-wider">Dynamic Specs</label>
+                {facetData.attributes.map((attr) => (
+                  <div key={attr.attribute_name} className="space-y-1.5">
+                    <span className="text-[11px] font-medium text-slate-400">{attr.display_name}</span>
+                    <div className="space-y-1 max-h-32 overflow-y-auto">
+                      {attr.values.slice(0, 5).map((valItem) => (
+                        <div key={valItem.value} className="flex items-center justify-between text-xs text-slate-300 py-0.5">
+                          <span className="truncate max-w-[120px]">{valItem.value}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">{valItem.count}</span>
+                        </div>
+                      ))}
                     </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
-                    {/* Commerce Description */}
-                    {item.commerce_description && (
-                      <p className="text-xs text-slate-300 leading-relaxed bg-slate-950/60 p-3 rounded-lg border border-slate-800 font-sans">
-                        {item.commerce_description}
-                      </p>
-                    )}
+        {/* Results Container */}
+        <div className={showFiltersSidebar ? 'md:col-span-3' : 'md:col-span-4'}>
+          {error && (
+            <div className="bg-red-950/50 border border-red-800 rounded-xl p-4 text-red-300 flex items-start gap-3 mb-4">
+              <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <h4 className="font-semibold text-sm">Search Failed</h4>
+                <p className="text-xs text-red-300/80 mt-1">{error}</p>
+              </div>
+            </div>
+          )}
 
-                    {/* Technical Specifications Preview */}
-                    {item.attributes.length > 0 && (
-                      <div className="space-y-1.5">
-                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider font-mono">
-                          Technical Specifications Preview
-                        </span>
-                        <div className="flex flex-wrap gap-2">
-                          {item.attributes.slice(0, 6).map((attr, idx) => (
+          {searchData && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+                <span>
+                  Found <strong className="text-white">{searchData.total}</strong> products matching query
+                </span>
+                {searchData.degraded_mode && (
+                  <span className="bg-amber-950 border border-amber-700 text-amber-300 px-2 py-0.5 rounded text-[11px] flex items-center gap-1">
+                    <ShieldAlert className="w-3.5 h-3.5" /> Degraded: {searchData.degraded_mode}
+                  </span>
+                )}
+              </div>
+
+              {searchData.results.length === 0 ? (
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center space-y-3">
+                  <Database className="w-10 h-10 text-slate-600 mx-auto" />
+                  <h4 className="text-lg font-semibold text-slate-300">No Products Found</h4>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    No catalog items matched your current search query and filter criteria. Try adjusting your query or resetting active filters.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {searchData.results.map((item) => (
+                    <div
+                      key={item.product_id}
+                      className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl p-5 shadow-lg transition space-y-3"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-base font-bold text-white hover:text-indigo-400 transition cursor-pointer" onClick={() => navigate(`/products/${item.product_id}`)}>
+                              {item.product_name}
+                            </h3>
+                            {item.match_type === 'exact' && (
+                              <span className="bg-emerald-950 border border-emerald-700 text-emerald-300 text-[10px] px-2 py-0.5 rounded font-medium">
+                                Exact Match
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 mt-1">
+                            <span>SKU: <strong className="text-slate-200">{item.sku}</strong></span>
+                            <span>•</span>
+                            <span>Brand: <strong className="text-slate-200">{item.manufacturer}</strong></span>
+                            <span>•</span>
+                            <span>Category: <strong className="text-indigo-300">{item.category}</strong></span>
+                            {item.model && (
+                              <>
+                                <span>•</span>
+                                <span>Model: <strong className="text-slate-200">{item.model}</strong></span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <div className="text-right">
+                            <div className="text-[11px] text-slate-400">Relevance</div>
+                            <div className="text-sm font-bold text-indigo-400">
+                              {((item.hybrid_score ?? item.similarity_score ?? item.keyword_score ?? 0) * 100).toFixed(0)}%
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => navigate(`/products/${item.product_id}`)}
+                            className="p-2 text-slate-400 hover:text-white bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-lg transition"
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {item.commerce_description && (
+                        <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
+                          {item.commerce_description}
+                        </p>
+                      )}
+
+                      {/* Attribute Badges */}
+                      {item.attributes && item.attributes.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          {item.attributes.slice(0, 4).map((attr) => (
                             <span
-                              key={idx}
-                              className="px-2.5 py-1 bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded font-mono flex items-center gap-1"
+                              key={attr.attribute_name}
+                              className="bg-slate-950 border border-slate-800 text-slate-300 text-[11px] px-2.5 py-1 rounded-md flex items-center gap-1.5"
                             >
                               <span className="text-slate-400">{attr.display_name}:</span>
-                              <span className="text-emerald-400 font-semibold">{attr.raw_value}</span>
-                              {attr.unit && <span className="text-slate-400">{attr.unit}</span>}
+                              <strong className="text-white">{attr.raw_value}</strong>
                             </span>
                           ))}
                         </div>
-                      </div>
-                    )}
-
-                    {/* Footer / Action */}
-                    <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        {item.status === 'verified' ? (
-                          <span className="text-[11px] text-emerald-400 flex items-center gap-1 font-mono">
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Verified Catalog Record
-                          </span>
-                        ) : (
-                          <span className="text-[11px] text-amber-400 flex items-center gap-1 font-mono">
-                            <ShieldAlert className="w-3.5 h-3.5" /> Needs Review
-                          </span>
-                        )}
-                      </div>
-
-                      <button
-                        onClick={() => navigate(`/catalog?product_id=${item.product_id}`)}
-                        className="px-4 py-2 bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white text-xs font-semibold rounded-lg border border-slate-700 transition flex items-center gap-1.5 shadow-sm"
-                      >
-                        <span>View Product Intelligence</span>
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </button>
+                      )}
                     </div>
-                  </div>
-                );
-              })}
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 };
