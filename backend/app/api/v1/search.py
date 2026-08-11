@@ -15,6 +15,7 @@ from app.repositories import AttributeRepository, ProductRepository
 from app.services.embeddings.factory import get_embedding_provider
 from app.services.indexing import IndexingService
 from app.services.qdrant import QdrantService
+from app.services.keyword_search import KeywordSearchService, KeywordSearchResponse
 
 router = APIRouter(prefix="/search")
 
@@ -157,6 +158,32 @@ def search_products(
         query=q,
         total=len(results),
         results=results,
+    )
+
+
+@router.get("/keyword", response_model=KeywordSearchResponse)
+def search_products_keyword(
+    q: str = Query(..., description="Text keyword search query"),
+    limit: int = Query(10, ge=1, le=100, description="Maximum number of search results to return"),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    brand: Optional[str] = Query(None, description="Filter by brand/manufacturer"),
+    product_status: Optional[str] = Query(None, alias="status", description="Filter by product status"),
+    min_quality_score: Optional[float] = Query(None, description="Filter by minimum quality score"),
+    session: Session = Depends(get_session),
+):
+    """
+    Normal/lexical PostgreSQL keyword search endpoint.
+    Performs case-insensitive exact and substring matching on product identity, SKU, model,
+    brand, category, and technical specifications with deterministic relevance scoring.
+    """
+    keyword_service = KeywordSearchService(session)
+    return keyword_service.search_keywords(
+        query=q,
+        limit=limit,
+        category=category,
+        brand=brand,
+        product_status=product_status,
+        min_quality_score=min_quality_score,
     )
 
 
