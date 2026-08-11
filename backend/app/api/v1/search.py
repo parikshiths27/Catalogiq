@@ -16,6 +16,7 @@ from app.services.embeddings.factory import get_embedding_provider
 from app.services.indexing import IndexingService
 from app.services.qdrant import QdrantService
 from app.services.keyword_search import KeywordSearchService, KeywordSearchResponse
+from app.services.hybrid_search import HybridSearchService, HybridSearchResponse
 
 router = APIRouter(prefix="/search")
 
@@ -43,8 +44,8 @@ class SearchResponse(BaseModel):
     results: List[SearchResultItem]
 
 
-@router.get("", response_model=SearchResponse)
-@router.get("/", response_model=SearchResponse)
+@router.get("", response_model=Any)
+@router.get("/", response_model=Any)
 def search_products(
     q: str = Query(..., description="Natural language search query"),
     limit: int = Query(10, ge=1, le=100, description="Maximum number of search results to return"),
@@ -52,15 +53,40 @@ def search_products(
     brand: Optional[str] = Query(None, description="Filter by brand/manufacturer"),
     product_status: Optional[str] = Query(None, alias="status", description="Filter by product status"),
     min_quality_score: Optional[float] = Query(None, description="Filter by minimum quality score"),
+    mode: Optional[str] = Query("semantic", description="Search mode: 'semantic', 'keyword', or 'hybrid'"),
     session: Session = Depends(get_session),
 ):
     """
-    Semantic search endpoint.
-    Embeds query, searches Qdrant vector collection, retrieves authoritative PostgreSQL products,
-    and returns ranked search results with similarity scores.
+    Search endpoint supporting 'semantic' (default), 'keyword', or 'hybrid' modes.
+    Default mode 'semantic' maintains 100% Phase 6 backward compatibility.
     """
     if not q or not q.strip():
-        return SearchResponse(query=q, total=0, results=[])
+        if mode == "hybrid":
+            return HybridSearchResponse(query=q or "", search_mode="hybrid", total=0, results=[])
+        elif mode == "keyword":
+            return KeywordSearchResponse(query=q or "", total=0, results=[])
+        return SearchResponse(query=q or "", total=0, results=[])
+
+    if mode == "hybrid":
+        hybrid_service = HybridSearchService(session)
+        return hybrid_service.search_hybrid(
+            query=q,
+            limit=limit,
+            category=category,
+            brand=brand,
+            product_status=product_status,
+            min_quality_score=min_quality_score,
+        )
+    elif mode == "keyword":
+        keyword_service = KeywordSearchService(session)
+        return keyword_service.search_keywords(
+            query=q,
+            limit=limit,
+            category=category,
+            brand=brand,
+            product_status=product_status,
+            min_quality_score=min_quality_score,
+        )
 
     # 1. Embed query
     provider = get_embedding_provider()
@@ -178,6 +204,30 @@ def search_products_keyword(
     """
     keyword_service = KeywordSearchService(session)
     return keyword_service.search_keywords(
+        query=q,
+        limit=limit,
+        category=category,
+        brand=brand,
+        product_status=product_status,
+        min_quality_score=min_quality_score,
+    )
+
+
+@router.get("/hybrid", response_model=HybridSearchResponse)
+def search_products_hybrid(
+    q: str = Query(..., description="Hybrid search query"),
+    limit: int = Query(10, ge=1, le=100, description="Maximum number of search results to return"),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    brand: Optional[str] = Query(None, description="Filter by brand/manufacturer"),
+    product_status: Optional[str] = Query(None, alias="status", description="Filter by product status"),
+    min_quality_score: Optional[float] = Query(None, description="Filter by minimum quality score"),
+    session: Session = Depends(get_session),
+):
+    """
+    Dedicated Hybrid Search endpoint combining PostgreSQL keyword search and Qdrant semantic vector search.
+    """
+    hybrid_service = HybridSearchService(session)
+    return hybrid_service.search_hybrid(
         query=q,
         limit=limit,
         category=category,
