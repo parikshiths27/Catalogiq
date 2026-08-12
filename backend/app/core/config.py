@@ -1,15 +1,28 @@
 import os
+from pathlib import Path
 from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Determine base project directories relative to config.py location
+_CONFIG_DIR = Path(__file__).resolve().parent
+_BACKEND_DIR = _CONFIG_DIR.parent.parent
+_ROOT_DIR = _BACKEND_DIR.parent
+
+# Default .env search locations resolved relative to project structure, not CWD
+_DEFAULT_ENV_FILES = (_ROOT_DIR / ".env", _BACKEND_DIR / ".env")
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        # Allow loading .env from CWD or parent directories
-        env_file=os.getenv("ENV_FILE_PATH", ".env"),
+        env_file=os.getenv("ENV_FILE_PATH") or _DEFAULT_ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
+    def __init__(self, *args, **kwargs):
+        if "ENV_FILE_PATH" in os.environ and "_env_file" not in kwargs:
+            kwargs["_env_file"] = os.environ["ENV_FILE_PATH"]
+        super().__init__(*args, **kwargs)
 
     APP_NAME: str = "CatalogIQ"
     ENV: str = "development"

@@ -58,6 +58,16 @@ class AssistantService:
 
         raw_msg = message.strip()
 
+        # Check deterministic fast-path FAQ layer first
+        from app.services.assistant_faq import match_faq_question
+        faq_match = match_faq_question(raw_msg)
+        if faq_match:
+            logger.info(f"Assistant FAQ fast-path match triggered for query: '{raw_msg}'")
+            return AssistantChatResponse(
+                message=faq_match["message"],
+                suggestions=faq_match["suggestions"],
+            )
+
         try:
             res_dict = self.provider.generate_assistant_response(
                 message=raw_msg,

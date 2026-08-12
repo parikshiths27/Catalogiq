@@ -15,7 +15,7 @@ Retry logic:
 import json
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
 from app.services.llm.base import (
@@ -224,18 +224,35 @@ class GeminiProvider(BaseLLMProvider):
         user_prompt = build_assistant_user_prompt(message=message, history=history, context=context)
         full_prompt = f"{CATALOGIQ_ASSISTANT_SYSTEM_PROMPT}\n\n{user_prompt}"
 
-        logger.info(f"Sending assistant request to Gemini model: {self._model}")
+        logger.info(f"Sending low-latency assistant request to Gemini model: {self._model}")
 
         try:
-            response = self._client.models.generate_content(
-                model=self._model,
-                contents=full_prompt,
-                config=self._types.GenerateContentConfig(
+            try:
+                assistant_config = self._types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    temperature=0.3,
-                    max_output_tokens=2048,
-                ),
-            )
+                    temperature=0.2,
+                    max_output_tokens=768,
+                    thinking_config=self._types.ThinkingConfig(
+                        thinking_level="minimal"
+                    ),
+                )
+                response = self._client.models.generate_content(
+                    model=self._model,
+                    contents=full_prompt,
+                    config=assistant_config,
+                )
+            except Exception as think_err:
+                logger.warning(f"ThinkingConfig minimal failed ({think_err}); falling back to standard low-latency config.")
+                assistant_config = self._types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                    max_output_tokens=768,
+                )
+                response = self._client.models.generate_content(
+                    model=self._model,
+                    contents=full_prompt,
+                    config=assistant_config,
+                )
             raw_content = response.text
         except Exception as e:
             logger.error(f"Gemini assistant call failure: {e}")
