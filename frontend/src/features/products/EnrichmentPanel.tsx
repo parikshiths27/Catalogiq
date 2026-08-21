@@ -1,4 +1,16 @@
 import React from 'react';
+import {
+  Sparkles,
+  FileText,
+  Target,
+  RefreshCw,
+  CheckCircle2,
+  AlertTriangle,
+  Globe,
+  Award,
+  Bot
+} from 'lucide-react';
+import { ConfidenceBadge } from '../../components/ui/ConfidenceBadge';
 
 interface EnrichmentData {
   commerce_description?: string;
@@ -13,6 +25,8 @@ interface EnrichmentData {
   prompt_version?: string;
   status?: string;
   generated_value?: string;
+  invoice_desc?: string;
+  mobile_desc?: string;
 }
 
 interface EnrichmentPanelProps {
@@ -20,20 +34,32 @@ interface EnrichmentPanelProps {
   onRerunEnrichment?: () => void;
 }
 
+const AiBadge: React.FC<{ label?: string }> = ({ label = 'AI Enriched' }) => (
+  <span className="inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-widest px-1.5 py-0.5 border border-[#9B8F77]/30 bg-[#9B8F77]/10 text-[#9B8F77]">
+    <Bot className="w-2.5 h-2.5" />
+    {label}
+  </span>
+);
+
 export const EnrichmentPanel: React.FC<EnrichmentPanelProps> = ({
   enrichment,
   onRerunEnrichment,
 }) => {
   if (!enrichment) {
     return (
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl text-center text-slate-400">
-        <p>No AI commerce enrichment generated yet.</p>
+      <div className="border border-border bg-card p-10 text-center space-y-4 rounded-none">
+        <Sparkles className="w-8 h-8 text-[#9B8F77] mx-auto" />
+        <h4 className="text-xl font-serif font-normal text-foreground">No AI Commerce Content Generated Yet</h4>
+        <p className="text-xs uppercase tracking-wider text-muted-foreground max-w-md mx-auto font-light">
+          Generate publication-grade commerce descriptions, bulleted features, and SEO titles backed by verified product specifications.
+        </p>
         {onRerunEnrichment && (
           <button
             onClick={onRerunEnrichment}
-            className="mt-4 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium text-sm transition"
+            className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2"
           >
-            Generate Commerce Intelligence
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Generate Commerce Intelligence</span>
           </button>
         )}
       </div>
@@ -61,30 +87,35 @@ export const EnrichmentPanel: React.FC<EnrichmentPanelProps> = ({
     : (parsedGen.applications || []);
   const seoTitle = enrichment.seo_title || parsedGen.seo_title;
   const seoDescription = enrichment.seo_description || parsedGen.seo_description;
+  const invoiceDesc = enrichment.invoice_desc || parsedGen.invoice_desc;
+  const mobileDesc = enrichment.mobile_desc || parsedGen.mobile_desc;
+  const retailDesc = parsedGen.retail_desc;
+  const longDesc = parsedGen.long_desc || commerceDescription;
 
-  const rawConf = enrichment.confidence ?? parsedGen.confidence ?? 0;
-  const confidencePct = Math.round(rawConf * 100);
+  const rawConf = enrichment.confidence ?? parsedGen.confidence ?? null;
 
   if (enrichment.status === 'failed') {
     return (
-      <div className="bg-slate-900 border border-red-900/50 rounded-xl p-6 shadow-xl space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-          <h3 className="text-xl font-bold text-red-400 flex items-center gap-2">
-            <span>⚠️</span> AI Commerce Enrichment Failed
+      <div className="border border-destructive/40 bg-destructive/10 p-8 space-y-4 rounded-none">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-serif font-normal text-destructive flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5" />
+            <span>AI Commerce Enrichment Failed</span>
           </h3>
-          <span className="text-xs bg-red-950 text-red-300 border border-red-800 px-3 py-1.5 rounded-md font-mono uppercase">
-            Status: Failed
+          <span className="text-[10px] font-mono px-2.5 py-1 border border-destructive bg-background uppercase font-bold text-destructive">
+            Failed
           </span>
         </div>
-        <p className="text-sm text-slate-300">
-          AI enrichment generation encountered an error or failed quality safety checks.
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          The enrichment generation encountered an error or failed safety threshold validation.
         </p>
         {onRerunEnrichment && (
           <button
             onClick={onRerunEnrichment}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium text-sm transition"
+            className="h-9 px-4 bg-destructive text-destructive-foreground text-[10px] uppercase tracking-widest font-semibold transition rounded-none inline-flex items-center gap-2"
           >
-            Retry Commerce Intelligence
+            <RefreshCw className="w-3 h-3" />
+            <span>Retry Commerce Intelligence</span>
           </button>
         )}
       </div>
@@ -92,109 +123,196 @@ export const EnrichmentPanel: React.FC<EnrichmentPanelProps> = ({
   }
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-        <div>
-          <h3 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-            <span>✨</span> AI Commerce Intelligence
-          </h3>
-          <p className="text-sm text-slate-400 mt-1">
-            Evidence-constrained, AI-generated commerce description & B2B metadata
-          </p>
-        </div>
+    <div className="space-y-6 rounded-none">
+      {/* Enrichment Metadata Bar */}
+      <div className="border border-border bg-card p-4 flex flex-wrap items-center justify-between gap-4 rounded-none">
         <div className="flex items-center gap-3">
-          <span className="text-xs bg-indigo-950 text-indigo-300 border border-indigo-800 px-3 py-1.5 rounded-md font-mono">
-            Model: {enrichment.model || 'Gemini 3.6 Flash'}
-          </span>
-          <div className="bg-slate-800 px-3 py-1.5 rounded-md border border-slate-700 text-right">
-            <span className="text-[10px] text-slate-400 block uppercase tracking-wider font-semibold">
-              Confidence
-            </span>
-            <span className="text-sm font-bold text-indigo-400">{confidencePct}%</span>
+          <div className="w-8 h-8 border border-border bg-background text-[#9B8F77] flex items-center justify-center rounded-none">
+            <Sparkles className="w-4 h-4" />
           </div>
+          <div>
+            <div className="text-xs font-serif font-normal text-foreground flex items-center gap-2">
+              <span>AI Commerce Intelligence Suite</span>
+              <AiBadge label="AI Generated" />
+            </div>
+            <div className="text-[10px] text-muted-foreground font-mono">
+              Prompt Version: <span className="text-foreground">{enrichment.prompt_version || 'v1.0'}</span>
+              {enrichment.model && (
+                <> • Model: <span className="text-foreground">{enrichment.model}</span></>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {rawConf != null && <ConfidenceBadge confidence={rawConf} />}
+          {onRerunEnrichment && (
+            <button
+              onClick={onRerunEnrichment}
+              className="h-8 px-3 border border-border bg-background text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition inline-flex items-center gap-1.5 rounded-none"
+              title="Regenerate with fresh LLM prompt"
+            >
+              <RefreshCw className="w-3 h-3 text-[#9B8F77]" />
+              <span>Regenerate</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Commerce Description */}
-      {commerceDescription && (
-        <div className="space-y-2">
-          <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            Commerce Description
-          </h4>
-          <div className="bg-slate-950/80 border border-slate-800/80 rounded-lg p-4 text-slate-200 text-sm leading-relaxed font-sans">
-            {commerceDescription}
-          </div>
+      {/* 5-Channel Content Descriptions */}
+      {(invoiceDesc || mobileDesc || shortDescription || longDesc || retailDesc) && (
+        <div className="space-y-4">
+          <h3 className="text-xs font-medium uppercase tracking-widest text-[#9B8F77] flex items-center gap-2">
+            <FileText className="w-3.5 h-3.5" />
+            <span>Multi-Channel Content Descriptions</span>
+            <AiBadge />
+          </h3>
+
+          {/* Invoice Description */}
+          {invoiceDesc && (
+            <div className="p-3 border border-border bg-background space-y-1 rounded-none">
+              <div className="flex items-center justify-between text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+                <span>Invoice Desc (ERP / Till Receipt &lt;= 40 chars, UPPERCASE)</span>
+                <span className="font-mono text-foreground">{invoiceDesc.length}/40</span>
+              </div>
+              <div className="font-mono text-xs font-bold text-[#9B8F77]">
+                {invoiceDesc}
+              </div>
+            </div>
+          )}
+
+          {/* Mobile Description */}
+          {mobileDesc && (
+            <div className="p-3 border border-border bg-background space-y-1 rounded-none">
+              <div className="flex items-center justify-between text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+                <span>Mobile Desc (App Compact List &lt;= 80 chars)</span>
+                <span className="font-mono text-foreground">{mobileDesc.length}/80</span>
+              </div>
+              <div className="text-xs text-foreground font-light">
+                {mobileDesc}
+              </div>
+            </div>
+          )}
+
+          {/* Short Description */}
+          {shortDescription && (
+            <div className="p-3 border border-border bg-background space-y-1 rounded-none">
+              <div className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+                Short Marketing Blurb
+              </div>
+              <div className="text-xs text-foreground italic font-light">{shortDescription}</div>
+            </div>
+          )}
+
+          {/* Long / Commerce Description */}
+          {longDesc && (
+            <div className="p-3 border border-border bg-background space-y-1 rounded-none">
+              <div className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+                Long Description (Catalog Page Marketing Copy)
+              </div>
+              <div className="text-xs text-foreground font-light leading-relaxed">
+                {longDesc}
+              </div>
+            </div>
+          )}
+
+          {/* Retail Description */}
+          {retailDesc && (
+            <div className="p-3 border border-border bg-background space-y-1 rounded-none">
+              <div className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+                Retail Title (Customer-Facing Header)
+              </div>
+              <div className="text-xs text-foreground font-light">
+                {retailDesc}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Short Description */}
-      {shortDescription && (
-        <div className="space-y-2">
-          <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            Short Summary
-          </h4>
-          <p className="text-sm text-slate-300 italic bg-slate-950/40 p-3 rounded border border-slate-800">
-            "{shortDescription}"
+      {/* Executive Commerce Summary (fallback if no channel descs) */}
+      {!invoiceDesc && !mobileDesc && commerceDescription && (
+        <div className="border border-border bg-card p-6 space-y-3 rounded-none">
+          <div className="flex items-center justify-between border-b border-border pb-2">
+            <h4 className="text-[10px] font-medium uppercase tracking-widest text-[#9B8F77] flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5" />
+              <span>Executive Commerce Description</span>
+              <AiBadge />
+            </h4>
+          </div>
+          <p className="text-sm text-foreground leading-relaxed font-light">
+            {commerceDescription}
           </p>
         </div>
       )}
 
-      {/* Features & Applications */}
+      {/* Bullet Features & Target Applications */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {features && features.length > 0 && (
-          <div className="space-y-2">
-            <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              Validated Key Features
-            </h4>
-            <ul className="space-y-1.5 text-sm text-slate-300">
+        {/* Bullet Features */}
+        <div className="border border-border bg-card p-6 space-y-3 rounded-none">
+          <h4 className="text-[10px] font-medium uppercase tracking-widest text-[#9B8F77] flex items-center gap-2 border-b border-border pb-2">
+            <Award className="w-3.5 h-3.5" />
+            <span>Key Feature Bullet Points ({features.length})</span>
+            {features.length > 0 && <AiBadge />}
+          </h4>
+          {features.length === 0 ? (
+            <p className="text-xs text-muted-foreground font-light">No feature points generated.</p>
+          ) : (
+            <ul className="space-y-2">
               {features.map((feat, idx) => (
-                <li key={idx} className="flex items-start gap-2">
-                  <span className="text-emerald-400 text-xs mt-0.5">✓</span>
+                <li key={idx} className="flex items-start gap-2.5 text-xs text-foreground font-light">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-[#9B8F77] shrink-0 mt-0.5" />
                   <span>{feat}</span>
                 </li>
               ))}
             </ul>
-          </div>
-        )}
+          )}
+        </div>
 
-        {applications && applications.length > 0 && (
-          <div className="space-y-2">
-            <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              Industrial Applications
-            </h4>
-            <ul className="space-y-1.5 text-sm text-slate-300">
+        {/* Industrial Applications */}
+        <div className="border border-border bg-card p-6 space-y-3 rounded-none">
+          <h4 className="text-[10px] font-medium uppercase tracking-widest text-[#9B8F77] flex items-center gap-2 border-b border-border pb-2">
+            <Target className="w-3.5 h-3.5" />
+            <span>Target Industrial Applications ({applications.length})</span>
+            {applications.length > 0 && <AiBadge />}
+          </h4>
+          {applications.length === 0 ? (
+            <p className="text-xs text-muted-foreground font-light">No applications identified.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
               {applications.map((app, idx) => (
-                <li key={idx} className="flex items-start gap-2">
-                  <span className="text-cyan-400 text-xs mt-0.5">•</span>
-                  <span>{app}</span>
-                </li>
+                <span
+                  key={idx}
+                  className="px-2.5 py-1 border border-border bg-background text-[11px] font-light text-foreground"
+                >
+                  {app}
+                </span>
               ))}
-            </ul>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* SEO Metadata */}
+      {/* SEO & Publication Metadata */}
       {(seoTitle || seoDescription) && (
-        <div className="border-t border-slate-800 pt-4 space-y-3">
-          <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            SEO & Catalog Metadata
+        <div className="border border-border bg-card p-6 space-y-3 rounded-none">
+          <h4 className="text-[10px] font-medium uppercase tracking-widest text-[#9B8F77] flex items-center gap-2 border-b border-border pb-2">
+            <Globe className="w-3.5 h-3.5" />
+            <span>Search Engine & Commerce SEO</span>
+            <AiBadge />
           </h4>
-          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1.5 text-xs font-mono">
-            {seoTitle && (
-              <div>
-                <span className="text-indigo-400 font-semibold block">SEO Title:</span>
-                <span className="text-slate-300">{seoTitle}</span>
-              </div>
-            )}
-            {seoDescription && (
-              <div>
-                <span className="text-indigo-400 font-semibold block">Meta Description:</span>
-                <span className="text-slate-400">{seoDescription}</span>
-              </div>
-            )}
-          </div>
+          {seoTitle && (
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-muted-foreground">SEO Page Title</div>
+              <div className="text-xs font-medium text-foreground">{seoTitle}</div>
+            </div>
+          )}
+          {seoDescription && (
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-muted-foreground">SEO Meta Description</div>
+              <div className="text-xs text-muted-foreground font-light">{seoDescription}</div>
+            </div>
+          )}
         </div>
       )}
     </div>

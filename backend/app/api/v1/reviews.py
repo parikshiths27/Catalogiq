@@ -1,14 +1,15 @@
 import uuid
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlmodel import Session, select, func
 from sqlalchemy import or_, and_, desc, asc
 
 from app.db.session import get_session
 from app.models import (
+    AuditLog,
     Product,
     ProductStatus,
     ProductAttribute,
@@ -67,6 +68,7 @@ class ReviewItemSchema(BaseModel):
 
 class ReviewSummaryCountsSchema(BaseModel):
     total_open_issues: int
+    total_resolved_issues: int = 0
     cross_source_conflicts: int
     low_confidence_issues: int
     validation_issues: int
@@ -88,14 +90,23 @@ def classify_issue_category(val_type: str, attr_status: Optional[str], confidenc
         ValidationType.cross_attribute_conflict.value,
         ValidationType.cross_source_conflict.value,
         ValidationType.inconsistent_value.value,
+        getattr(ValidationType, "manufacturer_brand_conflict", "manufacturer_brand_conflict"),
+        getattr(ValidationType, "duplicate_identity_conflict", "duplicate_identity_conflict"),
+        getattr(ValidationType, "conflicting_sources", "conflicting_sources"),
     }
     low_conf_types = {
         ValidationType.low_confidence.value,
         ValidationType.unsupported_claim.value,
+        getattr(ValidationType, "missing_manufacturer_evidence", "missing_manufacturer_evidence"),
     }
     missing_types = {
         ValidationType.missing_required_field.value,
         ValidationType.missing_required_attribute.value,
+        getattr(ValidationType, "manufacturer_unresolved", "manufacturer_unresolved"),
+        getattr(ValidationType, "brand_unresolved", "brand_unresolved"),
+        getattr(ValidationType, "taxonomy_unresolved", "taxonomy_unresolved"),
+        getattr(ValidationType, "attribute_not_in_lov", "attribute_not_in_lov"),
+        getattr(ValidationType, "unsupported_uom", "unsupported_uom"),
     }
 
     if val_type in conflict_types or attr_status == AttributeStatus.conflicting.value:
@@ -277,6 +288,10 @@ def list_reviews(
         select(ValidationResult).where(ValidationResult.status == ValidationStatus.open)
     ).all()
 
+    resolved_count = session.exec(
+        select(func.count()).select_from(ValidationResult).where(ValidationResult.status == ValidationStatus.resolved)
+    ).one() or 0
+
     total_open_issues = len(open_val_results)
     cross_source_conflicts = 0
     low_confidence_issues = 0
@@ -301,6 +316,7 @@ def list_reviews(
 
     summary_counts = ReviewSummaryCountsSchema(
         total_open_issues=total_open_issues,
+        total_resolved_issues=resolved_count,
         cross_source_conflicts=cross_source_conflicts,
         low_confidence_issues=low_confidence_issues,
         validation_issues=validation_issues,
@@ -333,3 +349,214 @@ def list_reviews(
         limit=limit,
         total_pages=total_pages,
     )
+
+
+# ---------------------------------------------------------------------------
+# Review Item Resolution Endpoint
+# ---------------------------------------------------------------------------
+
+class ReviewResolutionRequest(BaseModel):
+    action: str  # "accept_current" | "override_custom"
+    resolved_value: Optional[Any] = None
+    notes: Optional[str] = None
+
+
+def _get_valid_classpaths() -> set:
+    """Returns the set of authoritative taxonomy classpaths from the reference loader."""
+    try:
+        from app.services.enrichment.reference_loader import get_reference_loader
+        loader = get_reference_loader()
+        return {t["classpath"] for t in loader.taxonomies}
+    except Exception:
+        return set()
+
+
+@router.get("/approved-taxonomies", response_model=List[str], status_code=status.HTTP_200_OK)
+def get_approved_taxonomies() -> List[str]:
+    """
+    Returns the complete list of authoritative, approved taxonomy classpaths for human review.
+    """
+    classpaths = _get_valid_classpaths()
+    return sorted(list(classpaths))
+
+
+@router.post("/items/{validation_id}/resolve", status_code=status.HTTP_200_OK)
+def resolve_review_item(
+    validation_id: uuid.UUID,
+    request: ReviewResolutionRequest,
+    session: Session = Depends(get_session),
+):
+    """
+    Resolve a human review item identified by its ValidationResult ID.
+
+    Accepted actions:
+    - accept_current: Mark the current/extracted value as accepted by a human reviewer.
+      For taxonomy_unresolved, this is only allowed if the actual_value is a valid taxonomy classpath.
+      Otherwise returns HTTP 422 with a clear explanation.
+    - override_custom: Apply a human-specified resolved_value.
+      For taxonomy_unresolved, the resolved_value must be a valid taxonomy classpath.
+
+    On success:
+    - ValidationResult.status is set to "resolved".
+    - Associated ProductAttribute (if any) is updated with the resolved value.
+    - AuditLog entry is created.
+    - Product quality score is recomputed.
+    - Product status is transitioned to VERIFIED if all quality gates pass.
+    """
+    val_record = session.get(ValidationResult, validation_id)
+    if not val_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Review item with validation_id={validation_id} not found. "
+                   f"Ensure the validation_id from the Reviews queue matches an existing ValidationResult record.",
+        )
+
+    if val_record.status == ValidationStatus.resolved:
+        return {
+            "status": "already_resolved",
+            "message": "This review item has already been resolved.",
+            "validation_id": str(validation_id),
+            "product_id": str(val_record.product_id),
+        }
+
+    val_type_str = (
+        val_record.validation_type.value
+        if hasattr(val_record.validation_type, "value")
+        else str(val_record.validation_type)
+    )
+
+    now = datetime.now(timezone.utc)
+    resolved_val: Optional[str] = None
+    action = request.action
+
+    # Determine resolution value based on action
+    if action == "accept_current":
+        current_val = val_record.actual_value
+        if current_val is None and val_record.expected_value is not None:
+            current_val = val_record.expected_value
+
+        # Taxonomy validation: accept_current for taxonomy_unresolved must be a valid classpath
+        if val_type_str == "taxonomy_unresolved":
+            valid_classpaths = _get_valid_classpaths()
+            current_str = str(current_val) if current_val is not None else ""
+            if current_str not in valid_classpaths:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "taxonomy_value_not_approved",
+                        "message": (
+                            f"Cannot accept current value '{current_str}' — "
+                            f"it is not in the authoritative taxonomy tree. "
+                            f"Use 'override_custom' with a valid classpath from the approved taxonomy."
+                        ),
+                        "valid_classpaths": sorted(valid_classpaths),
+                    },
+                )
+
+        resolved_val = str(current_val) if current_val is not None else ""
+
+    elif action == "override_custom":
+        if request.resolved_value is None or str(request.resolved_value).strip() == "":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="resolved_value is required for override_custom action.",
+            )
+        resolved_val = str(request.resolved_value).strip()
+
+        # Taxonomy validation: override must be a valid classpath
+        if val_type_str == "taxonomy_unresolved":
+            valid_classpaths = _get_valid_classpaths()
+            if resolved_val not in valid_classpaths:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "taxonomy_value_not_approved",
+                        "message": (
+                            f"Override value '{resolved_val}' is not in the authoritative taxonomy tree. "
+                            f"Provide an exact classpath from the approved taxonomy."
+                        ),
+                        "valid_classpaths": sorted(valid_classpaths),
+                    },
+                )
+
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported action '{action}'. Allowed: 'accept_current', 'override_custom'.",
+        )
+
+    # Update associated ProductAttribute if present
+    attr: Optional[ProductAttribute] = None
+    if val_record.attribute_id:
+        attr = session.get(ProductAttribute, val_record.attribute_id)
+        if attr and resolved_val:
+            attr.raw_value = resolved_val
+            attr.normalized_value = resolved_val
+            attr.status = AttributeStatus.verified
+            attr.updated_at = now
+            session.add(attr)
+
+    # Mark validation as resolved
+    val_record.status = ValidationStatus.resolved
+    val_record.actual_value = resolved_val
+    val_record.resolved_at = now
+    val_record.resolved_by = "human_reviewer"
+    session.add(val_record)
+
+    # Audit log
+    audit = AuditLog(
+        entity_type="validation_result",
+        entity_id=validation_id,
+        action="human_review_resolution",
+        actor_type="user",
+        metadata_json={
+            "review_action": action,
+            "resolved_value": resolved_val,
+            "validation_type": val_type_str,
+            "notes": request.notes,
+        },
+    )
+    session.add(audit)
+
+    # Update product taxonomy if resolving a taxonomy issue
+    product = session.get(Product, val_record.product_id)
+    if product:
+        if val_type_str == "taxonomy_unresolved" and resolved_val:
+            product.category = resolved_val
+            if ">" in resolved_val:
+                product.subcategory = resolved_val.split(">")[-1].strip()
+
+        remaining_open = session.exec(
+            select(func.count()).select_from(ValidationResult).where(
+                ValidationResult.product_id == val_record.product_id,
+                ValidationResult.status == ValidationStatus.open,
+                ValidationResult.id != validation_id,
+            )
+        ).one() or 0
+
+        # Recalculate quality: each resolved issue improves score proportionally
+        current_score = product.quality_score or 70.0
+        if remaining_open == 0:
+            product.quality_score = min(99.0, current_score + 15.0)
+            product.status = ProductStatus.verified
+        else:
+            product.quality_score = min(95.0, current_score + 2.0)
+
+        product.updated_at = now
+        session.add(product)
+
+    session.commit()
+
+    return {
+        "status": "resolved",
+        "validation_id": str(validation_id),
+        "product_id": str(val_record.product_id),
+        "resolved_value": resolved_val,
+        "action": action,
+        "remaining_open_issues": remaining_open if product else None,
+        "product_status": str(
+            product.status.value if product and hasattr(product.status, "value") else (str(product.status) if product else "unknown")
+        ),
+        "product_quality_score": product.quality_score if product else None,
+    }
+

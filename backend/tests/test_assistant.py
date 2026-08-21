@@ -134,7 +134,7 @@ def test_faq_fast_path_returns_without_calling_llm():
 
     res = service.answer_question("How does CatalogIQ work?")
     assert res.message is not None
-    assert "CatalogIQ is an AI-powered product intelligence platform" in res.message
+    assert "AI-powered product intelligence and catalog enrichment platform" in res.message
     # Assert LLM provider was NOT called
     mock_provider.generate_assistant_response.assert_not_called()
 
@@ -144,7 +144,8 @@ def test_faq_how_does_catalogiq_work_deterministic():
     res = match_faq_question("How does CatalogIQ work?")
     assert res is not None
     assert res["is_faq"] is True
-    assert "ingest raw, unstructured technical catalog PDFs" in res["message"]
+    assert "multi-format technical catalogs" in res["message"]
+    assert "XLSX" in res["message"]
     assert len(res["suggestions"]) > 0
 
 
@@ -208,3 +209,111 @@ def test_gemini_low_latency_config_inspection():
     assert config.max_output_tokens == 768
     assert config.response_mime_type == "application/json"
     assert config.thinking_config is not None
+
+
+# ==============================================================================
+# CURRENT PRODUCT CAPABILITIES & ANTI-REGRESSION TESTS
+# ==============================================================================
+
+def test_question_1_excel_upload_flow():
+    """1. If I upload an Excel file, what happens?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("If I upload an Excel file, what happens?")
+    assert res.message is not None
+    assert "ExcelParser" in res.message or "excel" in res.message.lower()
+    assert "Intermediate Representation" in res.message or "IR" in res.message
+    assert "PDF-only" not in res.message
+    assert "Excel uploads are not currently supported" not in res.message
+
+
+def test_question_2_supported_file_formats():
+    """2. What file formats are supported?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("What file formats are supported?")
+    assert res.message is not None
+    for fmt in ["PDF", "XLSX", "CSV", "DOCX", "TXT", "JSON", "XML", "HTML", "ZIP"]:
+        assert fmt in res.message.upper()
+
+
+def test_question_3_multi_file_upload():
+    """3. Can I upload multiple files?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("Can I upload multiple files?")
+    assert res.message is not None
+    assert "IngestionBatch" in res.message or "batch" in res.message.lower()
+    assert "IngestionBatchItem" in res.message or "independently" in res.message.lower()
+
+
+def test_question_4_zip_upload():
+    """4. Can I upload a ZIP?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("Can I upload a ZIP?")
+    assert res.message is not None
+    assert "ZIP" in res.message
+    assert "extract" in res.message.lower() or "batch" in res.message.lower()
+
+
+def test_question_5_batch_processing_workflow():
+    """5. How does batch processing work?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("How does batch processing work?")
+    assert res.message is not None
+    assert "IngestionBatch" in res.message
+    assert "IngestionBatchItem" in res.message
+    assert "independent" in res.message.lower()
+
+
+def test_question_6_pdf_only_refusal():
+    """6. Does CatalogIQ only support PDFs?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("Does CatalogIQ only support PDFs?")
+    assert res.message is not None
+    assert "not PDF-only" in res.message or "not pdf-only" in res.message.lower() or "multiple" in res.message.lower()
+    assert "XLSX" in res.message or "Excel" in res.message
+
+
+def test_question_7_post_excel_upload():
+    """7. What happens after an Excel upload?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("What happens after an Excel upload?")
+    assert res.message is not None
+    assert "parsing" in res.message.lower() or "excelparser" in res.message.lower()
+    assert "extraction" in res.message.lower() or "enrichment" in res.message.lower()
+
+
+def test_question_8_duplicate_file_upload():
+    """8. What happens if the same file is uploaded twice?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("What happens if the same file is uploaded twice?")
+    assert res.message is not None
+    assert "SHA-256" in res.message or "hash" in res.message.lower()
+    assert "cached" in res.message.lower() or "redundant" in res.message.lower()
+
+
+def test_question_9_needs_review_explanation():
+    """9. What does needs_review mean?"""
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("What does needs_review mean?")
+    assert res.message is not None
+    assert "needs_review" in res.message
+    assert "confidence" in res.message.lower() or "review" in res.message.lower()
+
+
+def test_system_prompt_anti_regression_checks():
+    """Verify system prompt contains multi-format, batch, ZIP, and enrichment knowledge without stale PDF-only restrictions."""
+    prompt = CATALOGIQ_ASSISTANT_SYSTEM_PROMPT
+    assert "ExcelParser" in prompt
+    assert "CSVParser" in prompt
+    assert "TextParser" in prompt
+    assert "JSONParser" in prompt
+    assert "XMLParser" in prompt
+    assert "HTMLParser" in prompt
+    assert "IngestionBatch" in prompt
+    assert "IngestionBatchItem" in prompt
+    assert "ZIP Archive" in prompt
+    assert "AI Commerce Enrichment" in prompt
+    assert "NEVER state that CatalogIQ only supports PDFs" in prompt
+    # Ensure no stale statements exist in prompt
+    assert "PDF-only" not in prompt
+    assert "Docling is the only parser" not in prompt
+    assert "Excel uploads are not currently supported" not in prompt

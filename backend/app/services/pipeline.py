@@ -46,7 +46,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.models import (
@@ -56,15 +56,24 @@ from app.models import (
     CacheType,
     Document,
     DocumentStatus,
+    EnrichmentResult,
+    EnrichmentStatus,
+    EnrichmentType,
     JobStatus,
     ProcessingJob,
     ProcessingStep,
     ProcessingStage,
+    Product,
     ProductAttribute,
     ProductDocumentAssociation,
+    ProductStatus,
     Source,
     SourceType,
     StepStatus,
+    ValidationResult,
+    ValidationSeverity,
+    ValidationStatus,
+    ValidationType,
 )
 from app.repositories import AttributeRepository, ProductRepository
 from app.services.cache import CacheService
@@ -73,7 +82,7 @@ from app.services.document import DocumentService
 from app.services.evidence_resolver import EvidenceResolver
 from app.services.llm.base import ExtractionResult, RawAttributeItem
 from app.services.normalizer import AttributeNormalizer, repair_mojibake
-from app.services.parser import DocumentParser, DoclingParser
+from app.services.parser import DocumentParser, MultiFormatParser, DoclingParser
 from app.services.product import ProductService
 from app.services.storage import get_storage_service
 
@@ -120,13 +129,13 @@ class PipelineStage(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: ParsingStage (unchanged)
+# Phase 3: ParsingStage (MultiFormatParser handles PDF, CSV, Excel, XML, JSON)
 # ---------------------------------------------------------------------------
 
 class ParsingStage(PipelineStage):
     def __init__(self, parser: Optional[DocumentParser] = None):
-        # Allow injecting custom test parser (MockParser) or default to runtime DoclingParser
-        self.parser = parser or DoclingParser()
+        # Default to MultiFormatParser to seamlessly handle CSV, Excel, PDF, JSON, XML
+        self.parser = parser or MultiFormatParser()
 
     def execute(self, session: Session, document_id: uuid.UUID, job_id: uuid.UUID, step_id: uuid.UUID) -> None:
         document = session.get(Document, document_id)
@@ -212,7 +221,10 @@ class ParsingStage(PipelineStage):
 
         # 4. Invoke the parser
         try:
-            parsed_data = self.parser.parse(file_bytes)
+            try:
+                parsed_data = self.parser.parse(file_bytes, filename=document.filename)
+            except TypeError:
+                parsed_data = self.parser.parse(file_bytes)
         except ValueError as e:
             raise NonRetryableProcessingError(f"Document format error: {e}")
         except Exception as e:
@@ -630,7 +642,300 @@ class ExtractionStage(PipelineStage):
             self._complete_step_and_job(session, step, job)
             return
 
-        # ---- 5. Deterministic table extraction ----
+        # ---- Check if document is a tabular catalog dataset (Excel / CSV with product rows) ----
+        is_tabular_catalog = False
+        catalog_tables = []
+
+        for page in ir.get("pages", []):
+            for table in page.get("tables", []):
+                headers = [str(h).strip().lstrip("\ufeff").lower() for h in table.get("headers", []) if str(h).strip()]
+                rows = table.get("rows", [])
+                if not rows:
+                    continue
+                catalog_kw = {
+                    "mfg_part_num", "part_desc", "e1_brand", "unilog_brand", "dib_brand",
+                    "part_manuf", "sku", "mpn", "part number", "part_number", "product name",
+                    "product_name", "brand", "manufacturer", "description", "item", "title",
+                    "dept", "class", "fine", "model"
+                }
+                headers_str = " ".join(headers)
+                if any(kw in headers_str for kw in catalog_kw) or (
+                    document.filename and document.filename.lower().endswith((".xlsx", ".xls", ".csv")) and len(headers) >= 2
+                ):
+                    is_tabular_catalog = True
+                    catalog_tables.append(table)
+
+        if is_tabular_catalog and catalog_tables:
+            logger.info(
+                f"ExtractionStage: Document {document_id} identified as tabular catalog. "
+                f"Processing rows via Unilog EnrichmentPipeline."
+            )
+            from app.services.enrichment.pipeline import EnrichmentPipeline
+            from app.services.llm.prompts import ENRICHMENT_PROMPT_VERSION
+            from app.models import (
+                EnrichmentResult,
+                EnrichmentType,
+                EnrichmentStatus,
+                ValidationResult,
+                ValidationType,
+                ValidationSeverity,
+                ValidationStatus,
+            )
+
+            enrichment_pipe = EnrichmentPipeline()
+            product_service = ProductService(session)
+            product_repo = ProductRepository(session)
+            attr_repo = AttributeRepository(session)
+            source = self._get_or_create_source(session, document)
+
+            created_count = 0
+            created_product_ids = []
+
+            for table in catalog_tables:
+                raw_headers = [str(h).strip().lstrip("\ufeff") for h in table.get("headers", [])]
+                for row_vals in table.get("rows", []):
+                    if not any(str(v).strip() for v in row_vals):
+                        continue
+                    row_dict = {h: str(v).strip() for h, v in zip(raw_headers, row_vals) if h}
+
+                    enrich_res = enrichment_pipe.process_row(row_dict)
+
+                    canonical_mpn = (
+                        enrich_res["identity"]["mpn"]
+                        or row_dict.get("Mfg_Part_Num")
+                        or row_dict.get("SKU")
+                        or row_dict.get("Part Number")
+                        or row_dict.get("Part_Number")
+                        or f"SKU-{uuid.uuid4().hex[:8]}"
+                    )
+                    canonical_brand = (
+                        enrich_res["identity"]["brand"]
+                        or row_dict.get("Brand")
+                        or row_dict.get("Unilog_Brand")
+                        or row_dict.get("Part_Manuf")
+                        or "Industrial"
+                    )
+                    product_name = (
+                        enrich_res["descriptions"]["short_desc"]
+                        or enrich_res["taxonomy"]["product_name"]
+                        or row_dict.get("Part_Desc")
+                        or row_dict.get("Product Name")
+                        or canonical_mpn
+                    )
+
+                    dept = enrich_res["taxonomy"]["dept"]
+                    class_ = enrich_res["taxonomy"]["class"]
+                    fine = enrich_res["taxonomy"]["fine"]
+                    category = class_ or dept or enrich_res["taxonomy"]["classpath"] or "Industrial Equipment"
+                    short_desc = enrich_res["descriptions"]["short_desc"] or row_dict.get("Part_Desc")
+                    long_desc = enrich_res["descriptions"]["long_desc"] or short_desc
+                    val_data = enrich_res["validation"]
+                    quality_score = float(val_data.get("quality_score", 85.0))
+                    is_verified = val_data.get("is_verified", False)
+
+                    features = [
+                        attr["normalized_value"]
+                        for attr in enrich_res["attributes"]
+                        if attr.get("name") in ["feature", "features", "mounting", "series", "with"]
+                    ]
+                    if not features and short_desc:
+                        features = [short_desc]
+
+                    prod_payload = {
+                        "sku": canonical_mpn,
+                        "brand": canonical_brand,
+                        "product_name": product_name,
+                        "model": canonical_mpn,
+                        "category": category,
+                        "subcategory": fine,
+                        "description": short_desc,
+                        "commerce_description": long_desc,
+                        "features": features,
+                        "applications": [category],
+                        "quality_score": quality_score,
+                        "status": ProductStatus.verified if is_verified else ProductStatus.needs_review,
+                        "attributes": {},
+                    }
+
+                    existing = product_repo.get_by_sku_brand(sku=canonical_mpn, brand=canonical_brand)
+                    if existing:
+                        product = product_service.update_product(
+                            product_id=existing.id,
+                            updated_data=prod_payload,
+                            change_summary=f"Catalog extraction from document {document_id}",
+                            actor_type="ai",
+                        )
+                    else:
+                        product = product_service.create_product(
+                            product_data=prod_payload,
+                            actor_type="ai",
+                        )
+
+                    self._associate_document(session, product.id, document_id)
+                    created_count += 1
+                    created_product_ids.append(product.id)
+
+                    # Persist extracted attributes & evidence
+                    for attr_item in enrich_res["attributes"]:
+                        attr_name = attr_item.get("name") or attr_item.get("label") or "attribute"
+                        disp_name = attr_item.get("label") or attr_name
+                        norm_val = attr_item.get("normalized_value")
+                        raw_val = attr_item.get("raw_value") or str(norm_val)
+                        unit_val = attr_item.get("unit")
+                        attr_conf = float(attr_item.get("confidence", 0.95))
+
+                        db_attr = ProductAttribute(
+                            product_id=product.id,
+                            attribute_name=attr_name.lower().replace(" ", "_"),
+                            display_name=disp_name,
+                            raw_value=str(raw_val),
+                            normalized_value=norm_val,
+                            unit=unit_val,
+                            data_type=AttributeDataType.text if not isinstance(norm_val, (int, float)) else AttributeDataType.numeric,
+                            confidence=attr_conf,
+                            status=AttributeStatus.verified if is_verified else AttributeStatus.needs_review,
+                            source_type="document",
+                        )
+                        db_attr = attr_repo.upsert_attribute(db_attr)
+
+                        evidence = AttributeEvidence(
+                            attribute_id=db_attr.id,
+                            source_id=source.id,
+                            document_id=document_id,
+                            page_number=1,
+                            evidence_text=attr_item.get("evidence") or str(raw_val),
+                            bbox_metadata={},
+                            extraction_method="deterministic",
+                        )
+                        attr_repo.upsert_evidence(evidence)
+
+                    # Persist EnrichmentResult with 5-channel descriptions and full 252-column delivery record
+                    enrich_payload = {
+                        "invoice_desc": enrich_res["descriptions"]["invoice_desc"],
+                        "mobile_desc": enrich_res["descriptions"]["mobile_desc"],
+                        "short_desc": enrich_res["descriptions"]["short_desc"],
+                        "long_desc": enrich_res["descriptions"]["long_desc"],
+                        "retail_desc": enrich_res["descriptions"]["retail_desc"],
+                        "commerce_description": long_desc,
+                        "features": features,
+                        "applications": [category],
+                        "confidence": quality_score / 100.0,
+                        "delivery_record": enrich_res.get("delivery_record", {}),
+                        "evidence_summary": enrich_res.get("evidence_summary", []),
+                    }
+
+                    old_enrich = session.exec(select(EnrichmentResult).where(EnrichmentResult.product_id == product.id)).all()
+                    for oe in old_enrich:
+                        session.delete(oe)
+
+                    enrich_db = EnrichmentResult(
+                        product_id=product.id,
+                        enrichment_type=EnrichmentType.description,
+                        generated_value=json.dumps(enrich_payload),
+                        model="unilog-enrichment-engine-v1.0",
+                        prompt_version=ENRICHMENT_PROMPT_VERSION,
+                        confidence=quality_score / 100.0,
+                        status=EnrichmentStatus.completed,
+                    )
+                    session.add(enrich_db)
+
+                    # Clear existing open validation issues for this product to prevent duplicates
+                    old_vals = session.exec(select(ValidationResult).where(ValidationResult.product_id == product.id)).all()
+                    for ov in old_vals:
+                        session.delete(ov)
+
+                    # Persist specific ValidationResult records with explicit review reasons
+                    for issue_item in val_data.get("issues", []):
+                        if isinstance(issue_item, dict):
+                            itype = issue_item.get("issue_type", "invalid_value")
+                            imsg = issue_item.get("message", "Validation issue")
+                            isev = issue_item.get("severity", "warning")
+                            iexp = issue_item.get("expected_value")
+                            iact = issue_item.get("actual_value")
+                        else:
+                            itype = "invalid_value"
+                            imsg = str(issue_item)
+                            isev = "warning"
+                            iexp = None
+                            iact = None
+
+                        # Map issue_type string to ValidationType enum
+                        val_enum_map = {
+                            "manufacturer_unresolved": ValidationType.manufacturer_unresolved,
+                            "unapproved_manufacturer": ValidationType.manufacturer_unresolved,
+                            "brand_unresolved": ValidationType.brand_unresolved,
+                            "unapproved_brand": ValidationType.brand_unresolved,
+                            "taxonomy_unresolved": ValidationType.taxonomy_unresolved,
+                            "unknown_classpath": ValidationType.taxonomy_unresolved,
+                            "unsupported_uom": ValidationType.unsupported_uom,
+                            "unapproved_uom": ValidationType.unsupported_uom,
+                            "attribute_not_in_lov": ValidationType.attribute_not_in_lov,
+                            "unsupported_claim": ValidationType.unsupported_claim,
+                            "unsupported_claims": ValidationType.unsupported_claim,
+                            "missing_required_attribute": ValidationType.missing_required_attribute,
+                            "missing_required": ValidationType.missing_required_attribute,
+                            "low_confidence": ValidationType.low_confidence,
+                            "invalid_value": ValidationType.invalid_value,
+                            "length_exceeded": ValidationType.invalid_value,
+                            "casing_violation": ValidationType.invalid_value,
+                        }
+                        mapped_vtype = val_enum_map.get(itype, ValidationType.invalid_value)
+                        mapped_sev = ValidationSeverity.error if isev == "error" else ValidationSeverity.warning
+
+                        val_db = ValidationResult(
+                            product_id=product.id,
+                            validation_type=mapped_vtype,
+                            severity=mapped_sev,
+                            status=ValidationStatus.open,
+                            message=imsg,
+                            expected_value=iexp,
+                            actual_value=iact,
+                        )
+                        session.add(val_db)
+
+            # Store extraction summary
+            extraction_storage_key = f"documents/extracted/{document_id}.json"
+            extraction_summary = {
+                "document_id": str(document_id),
+                "is_tabular_catalog": True,
+                "products_count": created_count,
+                "extracted_at": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                storage.upload_file(
+                    json.dumps(extraction_summary, indent=2).encode("utf-8"),
+                    extraction_storage_key,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to upload extraction summary: {e}")
+
+            now = datetime.now(timezone.utc)
+            job.total_items = created_count
+            job.completed_items = created_count
+            job.status = JobStatus.completed
+            job.current_stage = ProcessingStage.completed
+            job.completed_at = now
+            job.updated_at = now
+
+            step.status = StepStatus.completed
+            step.completed_at = now
+            step.updated_at = now
+
+            document.status = DocumentStatus.processed
+            document.updated_at = now
+
+            session.add(document)
+            session.add(step)
+            session.add(job)
+            session.commit()
+
+            from app.workers.tasks.document_processing import _update_batch_progress_if_needed
+            _update_batch_progress_if_needed(session, document)
+
+            logger.info(f"ExtractionStage: successfully enriched and persisted {created_count} products from tabular document {document_id}")
+            return
+
+        # ---- 5. Deterministic table extraction (for prose/PDF docs) ----
         table_extractor = TableExtractor()
         table_attrs = table_extractor.extract_from_ir(ir)
 
@@ -641,10 +946,12 @@ class ExtractionStage(PipelineStage):
             from app.services.llm.base import ConfigurationError
             if isinstance(e, ConfigurationError):
                 raise ExtractionConfigurationError(str(e)) from e
+            err_str = str(e).lower()
+            if any(k in err_str for k in ["429", "503", "resource_exhausted", "quota exceeded", "retry in"]):
+                raise TransientProcessingError(f"Transient LLM extraction failure: {e}") from e
             raise NonRetryableProcessingError(f"LLM extraction failed: {e}") from e
 
         # ---- 7. Merge: table attrs take precedence (deterministic first) ----
-        # Collect deterministic attribute names to avoid LLM duplicates
         det_names = {a.name for a in table_attrs}
         merged_attrs: List[RawAttributeItem] = list(table_attrs)
         for attr in llm_result.attributes:
@@ -710,7 +1017,7 @@ class ExtractionStage(PipelineStage):
                     f"norm={norm_result.normalized_value!r}, data_type={norm_result.data_type}"
                 )
 
-                # Check for conflicts BEFORE scoring (conflict count affects score)
+                # Check for conflicts BEFORE scoring
                 has_conflict, conflict_count = conflict_detector.check_and_register(
                     product_id=product.id,
                     attribute_name=attr_item.name,
@@ -728,7 +1035,6 @@ class ExtractionStage(PipelineStage):
                     conflict_count=conflict_count,
                 )
 
-                # Determine final attribute status
                 final_status = conf_score.status
                 if has_conflict:
                     final_status = AttributeStatus.conflicting
@@ -745,11 +1051,6 @@ class ExtractionStage(PipelineStage):
                     confidence=conf_score.to_pipeline_float(),
                     status=final_status,
                     source_type=attr_item.extraction_method,
-                )
-
-                logger.info(
-                    f"[Pre-Persistence Attribute] attr={db_attr.attribute_name}, "
-                    f"raw={db_attr.raw_value!r}, norm={db_attr.normalized_value!r}, data_type={db_attr.data_type}"
                 )
 
                 db_attr = attr_repo.upsert_attribute(db_attr)
@@ -772,7 +1073,6 @@ class ExtractionStage(PipelineStage):
                     f"Failed to persist attribute '{attr_item.name}' for product {product.id}: {attr_err}",
                     exc_info=True,
                 )
-                # Continue — attribute failure should not abort the entire extraction
 
         session.commit()
 
@@ -827,31 +1127,28 @@ class ExtractionStage(PipelineStage):
         from app.repositories import AttributeRepository
 
         stmt = select(ProductDocumentAssociation).where(ProductDocumentAssociation.document_id == document_id)
-        assoc = session.exec(stmt).first()
-        if not assoc:
+        assocs = session.exec(stmt).all()
+        if not assocs:
             return
 
         attr_repo = AttributeRepository(session)
-        attributes = attr_repo.list_by_product(assoc.product_id)
         normalizer = AttributeNormalizer()
 
-        for attr in attributes:
-            repaired_raw = repair_mojibake(attr.raw_value)
-            dt_str = getattr(attr.data_type, "value", str(attr.data_type))
-            norm_result = normalizer.normalize(
-                raw_value=repaired_raw,
-                data_type=dt_str,
-                unit=attr.unit,
-            )
-            logger.info(
-                f"[Cache-Hit Normalization] attr={attr.attribute_name}, "
-                f"raw={repaired_raw!r}, norm={norm_result.normalized_value!r}, data_type={dt_str}"
-            )
-            attr.raw_value = repaired_raw
-            attr.normalized_value = norm_result.normalized_value
-            attr.unit = norm_result.unit
-            attr.updated_at = datetime.now(timezone.utc)
-            session.add(attr)
+        for assoc in assocs:
+            attributes = attr_repo.list_by_product(assoc.product_id)
+            for attr in attributes:
+                repaired_raw = repair_mojibake(attr.raw_value)
+                dt_str = getattr(attr.data_type, "value", str(attr.data_type))
+                norm_result = normalizer.normalize(
+                    raw_value=repaired_raw,
+                    data_type=dt_str,
+                    unit=attr.unit,
+                )
+                attr.raw_value = repaired_raw
+                attr.normalized_value = norm_result.normalized_value
+                attr.unit = norm_result.unit
+                attr.updated_at = datetime.now(timezone.utc)
+                session.add(attr)
 
         session.commit()
 
@@ -884,8 +1181,24 @@ class ExtractionStage(PipelineStage):
             "applications": result.applications or [],
             "certifications": result.certifications or [],
             "keywords": result.keywords or [],
-            "attributes": {},  # Product.attributes JSONB is for lightweight denorm only
+            "attributes": {},
         }
+
+    def _complete_step_and_job(
+        self, session: Session, step: ProcessingStep, job: ProcessingJob
+    ) -> None:
+        """Completes the extraction step and keeps the job in processing state for downstream stages."""
+        now = datetime.now(timezone.utc)
+        step.status = StepStatus.completed
+        step.completed_at = now
+        step.updated_at = now
+
+        job.status = JobStatus.processing
+        job.updated_at = now
+
+        session.add(step)
+        session.add(job)
+        session.commit()
 
     def _get_or_create_source(self, session: Session, document: Document) -> Source:
         """Get or create a Source record representing this document as provenance."""
@@ -896,12 +1209,12 @@ class ExtractionStage(PipelineStage):
             return existing
 
         source = Source(
+            id=uuid.uuid4(),
+            name=document.filename or "Uploaded Document",
             source_type=SourceType.document,
-            name=document.filename,
             uri=document.storage_key,
+            trust_level=0.9,
             document_id=document.id,
-            trust_level=0.9,  # Manufacturer datasheets are generally trustworthy
-            metadata_json={"parser_name": document.parser_name, "parser_version": document.parser_version},
         )
         session.add(source)
         session.commit()
@@ -911,7 +1224,7 @@ class ExtractionStage(PipelineStage):
     def _associate_document(
         self, session: Session, product_id: uuid.UUID, document_id: uuid.UUID
     ) -> None:
-        """Create a ProductDocumentAssociation if one doesn't already exist."""
+        """Idempotently associate a document with a product."""
         from sqlmodel import select
         stmt = select(ProductDocumentAssociation).where(
             ProductDocumentAssociation.product_id == product_id,
@@ -920,22 +1233,22 @@ class ExtractionStage(PipelineStage):
         existing = session.exec(stmt).first()
         if not existing:
             assoc = ProductDocumentAssociation(
-                product_id=product_id, document_id=document_id
+                product_id=product_id,
+                document_id=document_id,
+                role="primary_specification",
             )
             session.add(assoc)
             session.commit()
 
 
 # ---------------------------------------------------------------------------
-# Phase 5: ValidationStage
+# Phase 3: ValidationStage
 # ---------------------------------------------------------------------------
 
 class ValidationStage(PipelineStage):
     """
     Validation pipeline stage.
-
-    Orchestrates deterministic rule checks, unit validation, range validation,
-    completeness calculation, conflict integration, and product quality scoring.
+    Runs deterministic validation checks on all products extracted from the document.
     """
 
     def execute(
@@ -947,14 +1260,13 @@ class ValidationStage(PipelineStage):
     ) -> None:
         from sqlmodel import select
         from app.models import (
-            AuditLog,
-            EnrichmentResult,
             Product,
             ProductDocumentAssociation,
             ProductStatus,
             ValidationResult,
             ValidationStatus,
         )
+        from app.repositories import AttributeRepository
         from app.services.validation_engine import ValidationEngine
 
         # ---- 1. Load entities ----
@@ -968,17 +1280,12 @@ class ValidationStage(PipelineStage):
         if not step:
             raise NonRetryableProcessingError(f"Step {step_id} not found")
 
-        # Find associated product
+        # Find all associated products
         stmt = select(ProductDocumentAssociation).where(ProductDocumentAssociation.document_id == document_id)
-        assoc = session.exec(stmt).first()
+        assocs = session.exec(stmt).all()
 
-        if not assoc:
-            # Fallback search by document title / product repo
-            raise NonRetryableProcessingError(f"No product associated with document {document_id}")
-
-        product = session.get(Product, assoc.product_id)
-        if not product:
-            raise NonRetryableProcessingError(f"Product {assoc.product_id} not found")
+        if not assocs:
+            raise NonRetryableProcessingError(f"No products associated with document {document_id}")
 
         # ---- 2. Update statuses ----
         now = datetime.now(timezone.utc)
@@ -991,76 +1298,79 @@ class ValidationStage(PipelineStage):
         session.add(job)
         session.commit()
 
-        # ---- 3. Load product attributes & evidence ----
         attr_repo = AttributeRepository(session)
-        attributes = attr_repo.list_by_product(product.id)
-        evidence_list = attr_repo.get_evidence_for_product(product.id)
-
-        evidence_names = {
-            a.attribute_name for a in attributes
-            if any(e.attribute_id == a.id and e.evidence_text for e in evidence_list)
-        }
-
-        for a in attributes:
-            dt_str = getattr(a.data_type, "value", str(a.data_type))
-            logger.info(
-                f"[Pre-Validation Attribute] attr={a.attribute_name}, "
-                f"raw={a.raw_value!r}, norm={a.normalized_value!r}, data_type={dt_str}"
-            )
-
-        # ---- 4. Run ValidationEngine ----
         engine = ValidationEngine()
-        val_res = engine.validate_product(
-            product=product,
-            attributes=attributes,
-            evidence_supported_attribute_names=evidence_names,
-            source_trust_level=0.9,
-        )
 
-        logger.info(
-            f"[Post-Validation Result] product_id={product.id}, "
-            f"quality_score={val_res.quality_breakdown.quality_score}, "
-            f"issues_count={len(val_res.issues)}, "
-            f"issues={[i.message for i in val_res.issues]}"
-        )
+        for assoc in assocs:
+            product = session.get(Product, assoc.product_id)
+            if not product:
+                continue
 
-        # ---- 5. Persist ValidationResult records idempotently ----
-        # Clear existing open validation results for this product to prevent duplicate rows on re-run
-        existing_open = session.exec(
-            select(ValidationResult).where(
-                ValidationResult.product_id == product.id,
-                ValidationResult.status == ValidationStatus.open,
+            # Check if domain-specific validation already exists for this product (from EnrichmentPipeline)
+            enrichment = session.exec(
+                select(EnrichmentResult).where(
+                    EnrichmentResult.product_id == product.id,
+                    EnrichmentResult.status == EnrichmentStatus.completed,
+                )
+            ).first()
+
+            if enrichment and "delivery_record" in (enrichment.generated_value or ""):
+                # Authoritative domain LOV validation already established
+                continue
+
+            # ---- 3. Load product attributes & evidence ----
+            attributes = attr_repo.list_by_product(product.id)
+            evidence_list = attr_repo.get_evidence_for_product(product.id)
+
+            evidence_names = {
+                a.attribute_name for a in attributes
+                if any(e.attribute_id == a.id and e.evidence_text for e in evidence_list)
+            }
+
+            # ---- 4. Run ValidationEngine ----
+            val_res = engine.validate_product(
+                product=product,
+                attributes=attributes,
+                evidence_supported_attribute_names=evidence_names,
+                source_trust_level=0.9,
             )
-        ).all()
-        for old in existing_open:
-            session.delete(old)
 
-        for issue in val_res.issues:
-            db_res = issue.to_db_model(product.id)
-            session.add(db_res)
+            # ---- 5. Persist ValidationResult records idempotently ----
+            existing_open = session.exec(
+                select(ValidationResult).where(
+                    ValidationResult.product_id == product.id,
+                    ValidationResult.status == ValidationStatus.open,
+                )
+            ).all()
+            for old in existing_open:
+                session.delete(old)
 
-        # ---- 6. Update Product quality_score & status ----
-        product.quality_score = val_res.quality_breakdown.quality_score
-        
-        if val_res.has_critical_issues or val_res.has_errors or product.quality_score < 70.0:
-            product.status = ProductStatus.needs_review
-        else:
-            product.status = ProductStatus.verified
+            for issue in val_res.issues:
+                db_res = issue.to_db_model(product.id)
+                session.add(db_res)
 
-        product.updated_at = now
-        session.add(product)
+            # ---- 6. Update Product quality_score & status ----
+            product.quality_score = val_res.quality_breakdown.quality_score
+            
+            if val_res.has_critical_issues or val_res.has_errors or product.quality_score < 70.0:
+                product.status = ProductStatus.needs_review
+            else:
+                product.status = ProductStatus.verified
+
+            product.updated_at = now
+            session.add(product)
 
         # ---- 7. Complete step ----
         step.status = StepStatus.completed
         step.completed_at = now
         step.updated_at = now
-        job.status = JobStatus.processing  # Still processing (enrichment next)
+        job.status = JobStatus.processing
         job.updated_at = now
 
         session.add(step)
         session.add(job)
         session.commit()
-        logger.info(f"ValidationStage completed for product {product.id}: quality_score={product.quality_score}")
+        logger.info(f"ValidationStage completed for {len(assocs)} products from document {document_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -1070,10 +1380,7 @@ class ValidationStage(PipelineStage):
 class EnrichmentStage(PipelineStage):
     """
     Enrichment pipeline stage.
-
-    Generates AI commerce description, short description, features, applications,
-    and SEO metadata strictly from verified product specifications.
-    Runs ClaimChecker to detect unsupported claims and calculates enrichment confidence.
+    Ensures publication-grade commerce descriptions, bullet features, and search indexing for all products.
     """
 
     def __init__(self, llm_provider=None) -> None:
@@ -1094,7 +1401,6 @@ class EnrichmentStage(PipelineStage):
     ) -> None:
         from sqlmodel import select
         from app.models import (
-            AuditLog,
             EnrichmentResult,
             EnrichmentStatus,
             EnrichmentType,
@@ -1117,13 +1423,9 @@ class EnrichmentStage(PipelineStage):
             raise NonRetryableProcessingError(f"Step {step_id} not found")
 
         stmt = select(ProductDocumentAssociation).where(ProductDocumentAssociation.document_id == document_id)
-        assoc = session.exec(stmt).first()
-        if not assoc:
-            raise NonRetryableProcessingError(f"No product associated with document {document_id}")
-
-        product = session.get(Product, assoc.product_id)
-        if not product:
-            raise NonRetryableProcessingError(f"Product {assoc.product_id} not found")
+        assocs = session.exec(stmt).all()
+        if not assocs:
+            raise NonRetryableProcessingError(f"No products associated with document {document_id}")
 
         # ---- 2. Update stage status ----
         now = datetime.now(timezone.utc)
@@ -1136,147 +1438,137 @@ class EnrichmentStage(PipelineStage):
         session.add(job)
         session.commit()
 
-        # ---- 3. Build verified product context ----
-        attr_repo = AttributeRepository(session)
-        attributes = attr_repo.list_by_product(product.id)
-
-        verified_attrs_map = {}
-        for a in attributes:
-            verified_attrs_map[a.attribute_name] = {
-                "raw_value": a.raw_value,
-                "normalized_value": a.normalized_value,
-                "unit": a.unit,
-                "confidence": a.confidence,
-            }
-
-        product_context = {
-            "product_name": product.product_name,
-            "brand": product.brand,
-            "sku": product.sku,
-            "model": product.model,
-            "category": product.category,
-            "description": product.description,
-            "verified_attributes": verified_attrs_map,
-            "features": product.features or [],
-            "applications": product.applications or [],
-        }
-
-        # ---- 4. Check cache ----
         provider = self._get_provider()
-        cache_service = CacheService(session)
-        raw_cache_key = (
-            f"enrich:{product.id}:{product.quality_score}:{provider.model_name}:{ENRICHMENT_PROMPT_VERSION}"
-        )
-        cache_key = f"cache:enrich:{hashlib.sha256(raw_cache_key.encode()).hexdigest()}"
+        attr_repo = AttributeRepository(session)
 
-        # ---- 5. Invoke LLM provider enrich ----
-        try:
-            enrichment = provider.enrich(product_context)
-        except Exception as e:
-            logger.error(f"Enrichment LLM call failed: {e}")
-            # Persist failure status idempotently without saving invalid output
-            existing_enrichments = session.exec(
+        for assoc in assocs:
+            product = session.get(Product, assoc.product_id)
+            if not product:
+                continue
+
+            # Check if valid enrichment already exists (e.g. from EnrichmentPipeline)
+            existing_enrichment = session.exec(
                 select(EnrichmentResult).where(
-                    EnrichmentResult.product_id == product.id
+                    EnrichmentResult.product_id == product.id,
+                    EnrichmentResult.status == EnrichmentStatus.completed,
                 )
-            ).all()
-            for old in existing_enrichments:
-                session.delete(old)
+            ).first()
 
-            failed_enrich_db = EnrichmentResult(
-                product_id=product.id,
-                enrichment_type=EnrichmentType.description,
-                generated_value="{}",
-                model=getattr(provider, "model_name", "unknown"),
-                prompt_version=ENRICHMENT_PROMPT_VERSION,
-                confidence=0.0,
-                status=EnrichmentStatus.failed,
-            )
-            session.add(failed_enrich_db)
+            if not existing_enrichment:
+                attributes = attr_repo.list_by_product(product.id)
+                verified_attrs_map = {
+                    a.attribute_name: {
+                        "raw_value": a.raw_value,
+                        "normalized_value": a.normalized_value,
+                        "unit": a.unit,
+                        "confidence": a.confidence,
+                    }
+                    for a in attributes
+                }
 
-            step.status = StepStatus.failed
-            step.error_message = f"Enrichment LLM call failed: {e}"
-            step.updated_at = now
-            job.status = JobStatus.failed
-            job.error_message = f"Enrichment LLM call failed: {e}"
-            job.updated_at = now
-            session.add(step)
-            session.add(job)
-            session.commit()
+                product_context = {
+                    "product_name": product.product_name,
+                    "brand": product.brand,
+                    "sku": product.sku,
+                    "model": product.model,
+                    "category": product.category,
+                    "description": product.description,
+                    "verified_attributes": verified_attrs_map,
+                    "features": product.features or [],
+                    "applications": product.applications or [],
+                }
 
-            raise NonRetryableProcessingError(f"Enrichment LLM call failed: {e}") from e
+                try:
+                    enrichment = provider.enrich(product_context)
+                    claim_checker = ClaimChecker()
+                    claim_res = claim_checker.check(
+                        enrichment=enrichment,
+                        verified_attributes=verified_attrs_map,
+                        verified_features=product.features or [],
+                        verified_applications=product.applications or [],
+                    )
+                    conf_calc = EnrichmentConfidenceCalculator()
+                    enrich_conf = conf_calc.calculate(
+                        claim_result=claim_res,
+                        evidence_coverage=product.quality_score,
+                        validation_health=85.0 if not claim_res.has_unsupported_claims else 40.0,
+                        source_trust=0.9,
+                        llm_confidence=enrichment.confidence,
+                    )
 
-        # ---- 6. Run ClaimChecker ----
-        claim_checker = ClaimChecker()
-        claim_res = claim_checker.check(
-            enrichment=enrichment,
-            verified_attributes=verified_attrs_map,
-            verified_features=product.features or [],
-            verified_applications=product.applications or [],
-        )
+                    old_enrichments = session.exec(
+                        select(EnrichmentResult).where(EnrichmentResult.product_id == product.id)
+                    ).all()
+                    for old in old_enrichments:
+                        session.delete(old)
 
-        # ---- 7. Calculate enrichment confidence ----
-        conf_calc = EnrichmentConfidenceCalculator()
-        enrich_conf = conf_calc.calculate(
-            claim_result=claim_res,
-            evidence_coverage=product.quality_score,  # Proxy or direct coverage
-            validation_health=85.0 if not claim_res.has_unsupported_claims else 40.0,
-            source_trust=0.9,
-            llm_confidence=enrichment.confidence,
-        )
+                    enrich_result_db = EnrichmentResult(
+                        product_id=product.id,
+                        enrichment_type=EnrichmentType.description,
+                        generated_value=json.dumps(enrichment.model_dump(), indent=2),
+                        model=provider.model_name,
+                        prompt_version=ENRICHMENT_PROMPT_VERSION,
+                        confidence=enrich_conf,
+                        status=EnrichmentStatus.completed,
+                    )
+                    session.add(enrich_result_db)
 
-        # Determine enrichment status (completed on generation success)
-        enrich_status = EnrichmentStatus.completed
+                    if enrichment.commerce_description:
+                        product.commerce_description = enrichment.commerce_description
+                    if claim_res.clean_features:
+                        product.features = claim_res.clean_features
+                    if claim_res.clean_applications:
+                        product.applications = claim_res.clean_applications
+                    if enrichment.keywords:
+                        product.keywords = enrichment.keywords
 
-        # ---- 8. Persist EnrichmentResult entity idempotently ----
-        existing_enrichments = session.exec(
-            select(EnrichmentResult).where(
-                EnrichmentResult.product_id == product.id
-            )
-        ).all()
-        for old in existing_enrichments:
-            session.delete(old)
+                    product.updated_at = now
+                    session.add(product)
 
-        enrich_result_db = EnrichmentResult(
-            product_id=product.id,
-            enrichment_type=EnrichmentType.description,
-            generated_value=json.dumps(enrichment.model_dump(), indent=2),
-            model=provider.model_name,
-            prompt_version=ENRICHMENT_PROMPT_VERSION,
-            confidence=enrich_conf,
-            status=enrich_status,
-        )
-        session.add(enrich_result_db)
+                except Exception as enrich_err:
+                    logger.error(f"Enrichment LLM call failed for product {product.id}: {enrich_err}")
+                    old_enrichments = session.exec(
+                        select(EnrichmentResult).where(EnrichmentResult.product_id == product.id)
+                    ).all()
+                    for old in old_enrichments:
+                        session.delete(old)
 
-        # ---- 9. Update Product commerce fields ----
-        if enrichment.commerce_description:
-            product.commerce_description = enrichment.commerce_description
-        if claim_res.clean_features:
-            product.features = claim_res.clean_features
-        if claim_res.clean_applications:
-            product.applications = claim_res.clean_applications
-        if enrichment.keywords:
-            product.keywords = enrichment.keywords
-        
-        product.updated_at = now
-        session.add(product)
+                    failed_enrich_db = EnrichmentResult(
+                        product_id=product.id,
+                        enrichment_type=EnrichmentType.description,
+                        generated_value="{}",
+                        model=getattr(provider, "model_name", "unknown"),
+                        prompt_version=ENRICHMENT_PROMPT_VERSION,
+                        confidence=0.0,
+                        status=EnrichmentStatus.failed,
+                    )
+                    session.add(failed_enrich_db)
 
-        # ---- 10. Audit log ----
-        audit = AuditLog(
-            entity_type="product",
-            entity_id=product.id,
-            action="ai_enrichment",
-            changes={
-                "model": provider.model_name,
-                "confidence": enrich_conf,
-                "status": enrich_status.value,
-                "unsupported_claims_count": len(claim_res.unsupported_claims),
-            },
-            actor_type="ai",
-        )
-        session.add(audit)
+                    step.status = StepStatus.failed
+                    step.error_message = f"Enrichment LLM call failed: {enrich_err}"
+                    step.updated_at = now
+                    job.status = JobStatus.failed
+                    job.error_message = f"Enrichment LLM call failed: {enrich_err}"
+                    job.updated_at = now
+                    session.add(step)
+                    session.add(job)
+                    session.commit()
 
-        # ---- 11. Complete step and job ----
+                    err_str = str(enrich_err).lower()
+                    if any(k in err_str for k in ["429", "503", "resource_exhausted", "retry in"]):
+                        raise TransientProcessingError(f"Transient enrichment LLM failure: {enrich_err}") from enrich_err
+
+                    raise NonRetryableProcessingError(f"Enrichment LLM call failed: {enrich_err}") from enrich_err
+
+            # Safe search auto-indexing
+            try:
+                from app.services.indexing import IndexingService
+                indexer = IndexingService(session)
+                indexer.index_product(product.id)
+            except Exception as idx_err:
+                logger.warning(f"Search indexing failed for product {product.id}: {idx_err}")
+
+        # ---- Complete step and job ----
         step.status = StepStatus.completed
         step.completed_at = now
         step.updated_at = now
@@ -1289,16 +1581,7 @@ class EnrichmentStage(PipelineStage):
         session.add(step)
         session.add(job)
         session.commit()
-        logger.info(f"EnrichmentStage completed for product {product.id}: status={enrich_status.value}, conf={enrich_conf}")
-
-        # ---- 12. Trigger safe search indexing ----
-        try:
-            from app.services.indexing import IndexingService
-            indexer = IndexingService(session)
-            indexer.index_product(product.id)
-            logger.info(f"Auto-indexed product {product.id} into search index post-enrichment")
-        except Exception as idx_err:
-            logger.warning(f"Post-enrichment search indexing failed for product {product.id} (non-fatal): {idx_err}")
+        logger.info(f"EnrichmentStage completed for {len(assocs)} products from document {document_id}")
 
 
 # ---------------------------------------------------------------------------

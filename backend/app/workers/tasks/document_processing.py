@@ -12,6 +12,7 @@ Extraction failures do not roll back parsing results.
 import uuid
 import logging
 import os
+from typing import Optional
 from datetime import datetime, timezone
 from celery.exceptions import Retry
 from sqlmodel import Session
@@ -28,7 +29,7 @@ from app.services.pipeline import (
     NonRetryableProcessingError,
     ExtractionConfigurationError,
 )
-from app.services.parser import DoclingParser, MockParser
+from app.services.parser import DoclingParser, MultiFormatParser, MockParser
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,60 @@ def get_parser():
     """
     Dynamically loads the appropriate document parser.
     MockParser is used in tests (TEST_MOCK_PARSER=true env var).
-    DoclingParser is used at runtime (fails clearly if unavailable).
+    MultiFormatParser is used at runtime.
     """
     if os.getenv("TEST_MOCK_PARSER") == "true":
         return MockParser()
-    return DoclingParser()
+    return MultiFormatParser()
+
+
+def _update_batch_progress_if_needed(session: Session, document: Optional[Document], error_message: Optional[str] = None) -> None:
+    """Updates all parent IngestionBatchItem records and recalculates parent IngestionBatch progress."""
+    if not document:
+        return
+
+    from app.models import IngestionBatchItem, BatchItemStatus, ProcessingJob, JobStatus
+    from app.services.batch import BatchService
+    from sqlmodel import select, or_
+
+    conditions = [IngestionBatchItem.document_id == document.id]
+    if document.batch_id:
+        conditions.append(IngestionBatchItem.batch_id == document.batch_id)
+
+    stmt = select(IngestionBatchItem).where(or_(*conditions))
+    items = session.exec(stmt).all()
+
+    affected_batch_ids = set()
+    if document.batch_id:
+        affected_batch_ids.add(document.batch_id)
+
+    now = datetime.now(timezone.utc)
+    for item in items:
+        affected_batch_ids.add(item.batch_id)
+        linked_job = session.get(ProcessingJob, item.job_id) if item.job_id else None
+
+        if document.status == DocumentStatus.failed or (linked_job and linked_job.status == JobStatus.failed):
+            item.status = BatchItemStatus.failed
+            item.error_message = error_message or (linked_job.error_message if linked_job else "Document processing failed")
+        elif document.status == DocumentStatus.processed and (not linked_job or linked_job.status == JobStatus.completed):
+            item.status = BatchItemStatus.completed
+            item.error_message = None
+            if not item.completed_at:
+                item.completed_at = now
+        else:
+            item.status = BatchItemStatus.processing
+
+        item.updated_at = now
+        session.add(item)
+
+    session.commit()
+
+    batch_service = BatchService(session)
+    for b_id in affected_batch_ids:
+        try:
+            batch_service.update_batch_progress(b_id)
+        except Exception as e:
+            logger.warning(f"Failed to update batch progress for batch {b_id}: {e}")
 
 
 def get_llm_provider():
@@ -66,6 +116,15 @@ def _create_extraction_step(session: Session, job_id: uuid.UUID, document_id: uu
     session.commit()
     session.refresh(step)
     return step
+
+
+def _dispatch_next_task(task_func, *args):
+    """Dispatches task via Celery worker queue with seamless inline fallback."""
+    try:
+        task_func.delay(*args)
+    except Exception as err:
+        logger.info(f"Worker queue dispatch bypassed ({err}), executing {task_func.__name__} directly.")
+        task_func(*args)
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -106,7 +165,8 @@ def process_document_task(self, document_id_str: str, job_id_str: str, step_id_s
             session.commit()
 
             extraction_step = _create_extraction_step(session, job_id, doc_id)
-            extract_document_task.delay(
+            _dispatch_next_task(
+                extract_document_task,
                 document_id_str, job_id_str, str(extraction_step.id)
             )
             return
@@ -121,7 +181,8 @@ def process_document_task(self, document_id_str: str, job_id_str: str, step_id_s
             session.refresh(document)
             if document.status == DocumentStatus.processed:
                 extraction_step = _create_extraction_step(session, job_id, doc_id)
-                extract_document_task.delay(
+                _dispatch_next_task(
+                    extract_document_task,
                     document_id_str, job_id_str, str(extraction_step.id)
                 )
                 logger.info(
@@ -163,6 +224,8 @@ def process_document_task(self, document_id_str: str, job_id_str: str, step_id_s
             session.add(step)
             session.add(job)
             session.commit()
+
+            _update_batch_progress_if_needed(session, document)
 
 
 def _create_validation_step(session: Session, job_id: uuid.UUID, document_id: uuid.UUID) -> ProcessingStep:
@@ -228,9 +291,15 @@ def extract_document_task(
             processor.extract_document(doc_id, job_id, step_id)
             logger.info(f"[Stage 2: Extraction] Completed successfully for Doc: {doc_id}")
 
-            # Trigger Stage 3: Validation
+            session.refresh(job)
+            session.refresh(document)
+            if job.status == JobStatus.completed or document.status == DocumentStatus.processed:
+                logger.info(f"[Stage 2: Extraction] Tabular catalog fully processed and enriched for Doc: {doc_id}.")
+                return
+
+            # Trigger Stage 3: Validation (for prose / PDF documents)
             val_step = _create_validation_step(session, job_id, doc_id)
-            validate_document_task.delay(document_id_str, job_id_str, str(val_step.id))
+            _dispatch_next_task(validate_document_task, document_id_str, job_id_str, str(val_step.id))
             logger.info(f"[Stage 3: Validation] Queued for Doc: {doc_id}, Step: {val_step.id}")
 
         except ExtractionConfigurationError as e:
@@ -245,9 +314,13 @@ def extract_document_task(
             job.failed_items = 1
             job.completed_at = now
             job.updated_at = now
+            document.status = DocumentStatus.failed
+            document.updated_at = now
+            session.add(document)
             session.add(step)
             session.add(job)
             session.commit()
+            _update_batch_progress_if_needed(session, document, error_message=str(e)[:400])
 
         except TransientProcessingError as e:
             logger.warning(f"[Stage 2: Extraction] Transient error (attempt {self.request.retries + 1}): {e}")
@@ -273,9 +346,14 @@ def extract_document_task(
             job.error_message = str(e)[:500]
             job.completed_at = now
             job.updated_at = now
+            document.status = DocumentStatus.failed
+            document.updated_at = now
+            session.add(document)
             session.add(step)
             session.add(job)
             session.commit()
+
+            _update_batch_progress_if_needed(session, document, error_message=str(e)[:500])
 
 
 @celery_app.task(bind=True, max_retries=2)
@@ -310,7 +388,7 @@ def validate_document_task(
 
             # Trigger Stage 4: Enrichment
             enrich_step = _create_enrichment_step(session, job_id, doc_id)
-            enrich_document_task.delay(document_id_str, job_id_str, str(enrich_step.id))
+            _dispatch_next_task(enrich_document_task, document_id_str, job_id_str, str(enrich_step.id))
             logger.info(f"[Stage 4: Enrichment] Queued for Doc: {doc_id}, Step: {enrich_step.id}")
 
         except Exception as e:
@@ -324,9 +402,14 @@ def validate_document_task(
             job.error_message = str(e)[:500]
             job.completed_at = now
             job.updated_at = now
+            document.status = DocumentStatus.failed
+            document.updated_at = now
+            session.add(document)
             session.add(step)
             session.add(job)
             session.commit()
+
+            _update_batch_progress_if_needed(session, document, error_message=str(e)[:500])
 
 
 @celery_app.task(bind=True, max_retries=2)
@@ -358,6 +441,25 @@ def enrich_document_task(
             processor = DocumentProcessingService(session, llm_provider=provider)
             processor.enrich_document(doc_id, job_id, step_id)
             logger.info(f"[Stage 4: Enrichment] Completed successfully for Doc: {doc_id}")
+            
+            document.status = DocumentStatus.processed
+            document.updated_at = datetime.now(timezone.utc)
+            session.add(document)
+            session.commit()
+
+            _update_batch_progress_if_needed(session, document)
+
+        except TransientProcessingError as e:
+            logger.warning(f"[Stage 4: Enrichment] Transient error (attempt {self.request.retries + 1}): {e}")
+            now = datetime.now(timezone.utc)
+            step.attempt_count = self.request.retries + 2
+            step.updated_at = now
+            session.add(step)
+            session.commit()
+            try:
+                self.retry(exc=e, countdown=15)
+            except Retry:
+                raise
 
         except Exception as e:
             logger.error(f"[Stage 4: Enrichment] Error for Doc {doc_id}: {e}", exc_info=True)
@@ -370,7 +472,12 @@ def enrich_document_task(
             job.error_message = str(e)[:500]
             job.completed_at = now
             job.updated_at = now
+            document.status = DocumentStatus.failed
+            document.updated_at = now
+            session.add(document)
             session.add(step)
             session.add(job)
             session.commit()
+
+            _update_batch_progress_if_needed(session, document, error_message=str(e)[:500])
 

@@ -23,6 +23,16 @@ class ValidationType(str, Enum):
     duplicate_product = "duplicate_product"
     low_confidence = "low_confidence"
     unsupported_claim = "unsupported_claim"
+    manufacturer_unresolved = "manufacturer_unresolved"
+    brand_unresolved = "brand_unresolved"
+    manufacturer_brand_conflict = "manufacturer_brand_conflict"
+    taxonomy_unresolved = "taxonomy_unresolved"
+    attribute_not_in_lov = "attribute_not_in_lov"
+    attribute_ambiguous = "attribute_ambiguous"
+    unsupported_uom = "unsupported_uom"
+    missing_manufacturer_evidence = "missing_manufacturer_evidence"
+    conflicting_sources = "conflicting_sources"
+    duplicate_identity_conflict = "duplicate_identity_conflict"
 
 class ValidationSeverity(str, Enum):
     info = "info"

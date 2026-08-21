@@ -7,14 +7,12 @@ import {
   Activity,
   Search,
   CheckSquare,
-  HeartPulse,
   AlertTriangle,
-  ArrowRight,
   RefreshCw,
   FileText,
-  ShieldCheck,
   Sparkles
 } from 'lucide-react';
+import { formatApiDateTime } from '../../lib/dates';
 
 interface OverviewKpis {
   total_products: number;
@@ -99,51 +97,30 @@ export const DashboardShell: React.FC = () => {
     fetchOverview();
   }, []);
 
-  const formatTimestamp = (isoString?: string) => {
-    if (!isoString) return '—';
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleDateString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    } catch {
-      return isoString;
-    }
-  };
-
   if (loading) {
     return (
-      <div className="space-y-6 text-slate-100 animate-pulse">
-        {/* Header Skeleton */}
+      <div className="space-y-6 text-foreground animate-pulse">
         <div className="flex items-center justify-between">
           <div className="space-y-2">
-            <div className="h-8 w-48 bg-slate-800 rounded-lg"></div>
-            <div className="h-4 w-96 bg-slate-800/60 rounded"></div>
+            <div className="h-8 w-48 bg-card border border-border"></div>
+            <div className="h-4 w-96 bg-card/60"></div>
           </div>
-          <div className="h-9 w-24 bg-slate-800 rounded-lg"></div>
+          <div className="h-9 w-24 bg-card border border-border"></div>
         </div>
 
-        {/* KPI Cards Skeletons */}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          {[...Array(6)].map((_, i) => (
-            <div key={i} className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
-              <div className="h-3 w-24 bg-slate-800 rounded"></div>
-              <div className="h-8 w-16 bg-slate-800 rounded"></div>
-              <div className="h-3 w-28 bg-slate-800/60 rounded"></div>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="p-5 bg-card border border-border space-y-3">
+              <div className="h-3 w-24 bg-border"></div>
+              <div className="h-8 w-16 bg-border"></div>
+              <div className="h-3 w-28 bg-border/60"></div>
             </div>
           ))}
         </div>
 
-        {/* Quick Actions Skeleton */}
-        <div className="h-16 bg-slate-900 border border-slate-800 rounded-xl"></div>
-
-        {/* Main Content Grid Skeleton */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="h-64 bg-slate-900 border border-slate-800 rounded-xl"></div>
-          <div className="h-64 bg-slate-900 border border-slate-800 rounded-xl"></div>
+          <div className="h-64 bg-card border border-border"></div>
+          <div className="h-64 bg-card border border-border"></div>
         </div>
       </div>
     );
@@ -151,23 +128,23 @@ export const DashboardShell: React.FC = () => {
 
   if (error) {
     return (
-      <div className="space-y-6 text-slate-100">
+      <div className="space-y-6 text-foreground">
         <div className="flex items-center gap-3">
-          <LayoutDashboard className="w-8 h-8 text-slate-400" />
+          <LayoutDashboard className="w-8 h-8 text-muted-foreground" />
           <div>
-            <h2 className="text-3xl font-bold tracking-tight">Overview</h2>
-            <p className="text-sm text-slate-400">Operational CatalogIQ dashboard</p>
+            <h2 className="text-3xl font-serif font-normal tracking-tight">Overview</h2>
+            <p className="text-xs uppercase tracking-wider text-muted-foreground">Operational CatalogIQ dashboard</p>
           </div>
         </div>
-        <div className="p-8 bg-red-950/40 border border-red-800/60 rounded-xl flex flex-col items-center justify-center text-center space-y-4">
-          <AlertTriangle className="w-12 h-12 text-red-400" />
+        <div className="p-8 bg-destructive/10 border border-destructive/30 flex flex-col items-center justify-center text-center space-y-4">
+          <AlertTriangle className="w-12 h-12 text-destructive" />
           <div className="max-w-md space-y-1">
-            <h3 className="font-semibold text-lg text-red-200">Unable to Load Overview Summary</h3>
-            <p className="text-sm text-red-300/80">{error}</p>
+            <h3 className="font-semibold text-lg text-foreground font-serif">Unable to Load Overview Summary</h3>
+            <p className="text-xs text-muted-foreground">{error}</p>
           </div>
           <button
             onClick={fetchOverview}
-            className="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-100 rounded-lg font-medium text-sm flex items-center gap-2 border border-red-700 transition"
+            className="px-4 py-2 bg-destructive text-destructive-foreground hover:opacity-90 font-medium text-xs uppercase tracking-widest flex items-center gap-2 border border-destructive transition"
           >
             <RefreshCw className="w-4 h-4" /> Retry
           </button>
@@ -178,456 +155,233 @@ export const DashboardShell: React.FC = () => {
 
   const kpis = data?.kpis;
   const reviewSummary = data?.review_summary;
-  const qualitySummary = data?.catalog_quality_summary;
   const activity = data?.processing_activity || [];
   const recentProducts = data?.recent_products || [];
 
-  const isEmpty = (kpis?.total_products ?? 0) === 0 && (kpis?.total_documents ?? 0) === 0;
+  const hasProducts = (kpis?.total_products ?? 0) > 0;
+
+  const primaryActions = [
+    { label: 'Upload Source', icon: UploadCloud, to: '/upload', primary: true },
+    { label: 'Review Issues', icon: CheckSquare, to: '/reviews' },
+    { label: 'Search Catalog', icon: Search, to: '/search' },
+  ];
+
+  // Only show KPI cards with real, meaningful data
+  const kpiCards = [
+    {
+      label: 'Total Products',
+      value: kpis?.total_products ?? 0,
+      detail: 'Products in catalog',
+      icon: Database,
+      accent: 'text-[#9B8F77]',
+    },
+    {
+      label: 'Sources Processed',
+      value: kpis?.documents_processed ?? 0,
+      detail: `${kpis?.total_documents ?? 0} total documents uploaded`,
+      icon: FileText,
+      accent: 'text-foreground',
+    },
+    {
+      label: 'Active Jobs',
+      value: kpis?.active_processing_jobs ?? 0,
+      detail: (kpis?.active_processing_jobs ?? 0) > 0 ? 'Processing pipeline active' : 'No active queue',
+      icon: Activity,
+      accent: 'text-[#9B8F77]',
+    },
+    {
+      label: 'Review Backlog',
+      value: kpis?.review_backlog ?? 0,
+      detail: `${reviewSummary?.products_needing_review ?? 0} products need review`,
+      icon: CheckSquare,
+      accent: 'text-amber-500',
+    },
+  ];
 
   return (
-    <div className="space-y-6 text-slate-100">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-indigo-950 border border-indigo-800 flex items-center justify-center text-indigo-400">
-            <LayoutDashboard className="w-6 h-6" />
-          </div>
-          <div>
-            <h2 className="text-3xl font-bold tracking-tight text-white flex items-center gap-2">
-              Overview
-            </h2>
-            <p className="text-sm text-slate-400">
-              Welcome to CatalogIQ. Live operational catalog health and ingestion intelligence.
-            </p>
-          </div>
-        </div>
-
-        <button
-          onClick={fetchOverview}
-          className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold rounded-lg border border-slate-800 transition flex items-center gap-2"
-        >
-          <RefreshCw className="w-3.5 h-3.5 text-slate-400" /> Refresh Data
-        </button>
-      </div>
-
-      {/* TOP KPI CARDS */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        {/* Total Products */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl shadow-lg space-y-2 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold tracking-wider uppercase">Total Products</span>
-            <Database className="w-4 h-4 text-indigo-400" />
-          </div>
-          <div className="text-3xl font-black text-white">{kpis?.total_products ?? 0}</div>
-          <p className="text-xs text-slate-400">
-            {kpis?.verification_rate != null ? `${kpis.verification_rate}% verified` : '0% verified'}
-          </p>
-        </div>
-
-        {/* Documents Processed */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl shadow-lg space-y-2 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold tracking-wider uppercase">Sources Processed</span>
-            <FileText className="w-4 h-4 text-blue-400" />
-          </div>
-          <div className="text-3xl font-black text-white">{kpis?.documents_processed ?? 0}</div>
-          <p className="text-xs text-slate-400">
-            {kpis?.total_documents ?? 0} total documents uploaded
-          </p>
-        </div>
-
-        {/* Active Jobs */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl shadow-lg space-y-2 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold tracking-wider uppercase">Active Jobs</span>
-            <Activity className="w-4 h-4 text-amber-400" />
-          </div>
-          <div className="text-3xl font-black text-white">{kpis?.active_processing_jobs ?? 0}</div>
-          <p className="text-xs text-slate-400">
-            {(kpis?.active_processing_jobs ?? 0) > 0 ? 'Processing pipeline active' : 'No active queue'}
-          </p>
-        </div>
-
-        {/* Review Backlog */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl shadow-lg space-y-2 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold tracking-wider uppercase">Review Backlog</span>
-            <CheckSquare className="w-4 h-4 text-orange-400" />
-          </div>
-          <div className="text-3xl font-black text-white">{kpis?.review_backlog ?? 0}</div>
-          <p className="text-xs text-slate-400">Products needing review</p>
-        </div>
-
-        {/* Catalog Quality */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl shadow-lg space-y-2 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold tracking-wider uppercase">Catalog Quality</span>
-            <Sparkles className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className="text-3xl font-black text-emerald-400">
-            {kpis?.catalog_quality_score != null ? `${kpis.catalog_quality_score}/100` : '--'}
-          </div>
-          <p className="text-xs text-slate-400">Overall health score</p>
-        </div>
-
-        {/* Verification Rate */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl shadow-lg space-y-2 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold tracking-wider uppercase">Verification Rate</span>
-            <ShieldCheck className="w-4 h-4 text-teal-400" />
-          </div>
-          <div className="text-3xl font-black text-teal-400">
-            {kpis?.verification_rate != null ? `${kpis.verification_rate}%` : '--'}
-          </div>
-          <p className="text-xs text-slate-400">Verified products ratio</p>
-        </div>
-      </div>
-
-      {/* QUICK ACTIONS BAR */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono">
-          <span>⚡ Quick Actions:</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => navigate('/upload')}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-md transition"
-          >
-            <UploadCloud className="w-4 h-4" /> Upload Document
-          </button>
-          <button
-            onClick={() => navigate('/catalog')}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold flex items-center gap-2 transition"
-          >
-            <Database className="w-4 h-4" /> Open Catalog
-          </button>
-          <button
-            onClick={() => navigate('/search')}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold flex items-center gap-2 transition"
-          >
-            <Search className="w-4 h-4" /> Search Catalog
-          </button>
-          <button
-            onClick={() => navigate('/reviews')}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold flex items-center gap-2 transition"
-          >
-            <CheckSquare className="w-4 h-4" /> Review Issues
-          </button>
-        </div>
-      </div>
-
-      {/* EMPTY STATE IF DB HAS NO PRODUCTS / DOCUMENTS */}
-      {isEmpty && (
-        <div className="p-12 border border-dashed border-slate-800 rounded-xl bg-slate-900/60 flex flex-col items-center justify-center text-center space-y-4">
-          <div className="w-16 h-16 rounded-full bg-indigo-950 border border-indigo-800 flex items-center justify-center text-indigo-400">
-            <UploadCloud className="w-8 h-8" />
-          </div>
-          <div className="max-w-md space-y-1">
-            <h3 className="font-bold text-xl text-white">No products yet</h3>
-            <p className="text-sm text-slate-400">
-              Upload a catalog document (e.g. PDF technical datasheet) to parse specifications, extract attributes, and build product intelligence.
-            </p>
-          </div>
-          <button
-            onClick={() => navigate('/upload')}
-            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold text-sm flex items-center gap-2 shadow-lg transition"
-          >
-            <UploadCloud className="w-4 h-4" /> Upload Document to Begin
-          </button>
-        </div>
-      )}
-
-      {/* MAIN TWO-COLUMN DASHBOARD CONTENT */}
-      {!isEmpty && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* REVIEW SUMMARY CARD */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-5 flex flex-col justify-between">
-            <div className="space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                <div className="flex items-center gap-2.5">
-                  <CheckSquare className="w-5 h-5 text-orange-400" />
-                  <h3 className="text-lg font-bold text-white">Review Summary</h3>
-                </div>
-                <span className="text-xs px-2.5 py-1 bg-amber-950/60 border border-amber-800/60 text-amber-300 rounded-full font-mono font-semibold">
-                  {reviewSummary?.products_needing_review ?? 0} needing review
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="p-4 bg-slate-950/80 border border-slate-800/80 rounded-lg space-y-1">
-                  <span className="text-[11px] text-slate-400 font-mono uppercase font-semibold">Unresolved Issues</span>
-                  <div className="text-2xl font-black text-white">
-                    {reviewSummary?.unresolved_validation_issues ?? 0}
-                  </div>
-                </div>
-
-                <div className="p-4 bg-slate-950/80 border border-slate-800/80 rounded-lg space-y-1">
-                  <span className="text-[11px] text-slate-400 font-mono uppercase font-semibold">Validation Conflicts</span>
-                  <div className="text-2xl font-black text-red-400">
-                    {reviewSummary?.conflicts_count ?? 0}
-                  </div>
-                </div>
-
-                <div className="p-4 bg-slate-950/80 border border-slate-800/80 rounded-lg space-y-1">
-                  <span className="text-[11px] text-slate-400 font-mono uppercase font-semibold">Low Confidence Fields</span>
-                  <div className="text-2xl font-black text-amber-400">
-                    {reviewSummary?.low_confidence_attributes ?? 0}
-                  </div>
-                </div>
-
-                <div className="p-4 bg-slate-950/80 border border-slate-800/80 rounded-lg space-y-1">
-                  <span className="text-[11px] text-slate-400 font-mono uppercase font-semibold">Products Needing Action</span>
-                  <div className="text-2xl font-black text-orange-400">
-                    {reviewSummary?.products_needing_review ?? 0}
-                  </div>
-                </div>
-              </div>
+    <div className="space-y-8 text-foreground rounded-none">
+      {/* Hero Section */}
+      <section className="border border-border bg-card p-8 rounded-none relative overflow-hidden">
+        <div className="absolute right-0 top-0 w-1/3 h-full opacity-[0.03] pointer-events-none mesh-grid border-l border-border" />
+        
+        <div className="flex flex-col gap-8 z-10 relative">
+          <div className="space-y-6">
+            <div className="inline-flex items-center gap-2 border border-[#9B8F77]/30 bg-[#9B8F77]/5 px-3 py-1.5 text-[9px] uppercase tracking-widest font-medium text-[#9B8F77]">
+              <Sparkles className="w-3.5 h-3.5" />
+              Product Intelligence Engine
             </div>
-
-            <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between">
-              <span className="text-xs text-slate-400">Resolve attribute conflicts & approval tasks</span>
-              <button
-                onClick={() => navigate('/reviews')}
-                className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 flex items-center gap-1.5 transition"
-              >
-                View Reviews <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
-              </button>
+            <div className="max-w-3xl space-y-4">
+              <h2 className="text-foreground text-4xl lg:text-5xl font-normal leading-tight font-serif">
+                Product data that explains itself.
+              </h2>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground leading-relaxed max-w-xl font-light">
+                CatalogIQ transforms raw industrial specifications into structured attribute claims, confidence scores, evidence provenance, and verified catalog intelligence.
+              </p>
             </div>
           </div>
 
-          {/* CATALOG QUALITY SUMMARY CARD */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-5 flex flex-col justify-between">
-            <div className="space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                <div className="flex items-center gap-2.5">
-                  <HeartPulse className="w-5 h-5 text-emerald-400" />
-                  <h3 className="text-lg font-bold text-white">Catalog Quality Summary</h3>
-                </div>
-                <span className="text-xs px-2.5 py-1 bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 rounded-full font-mono font-semibold">
-                  Score: {qualitySummary?.overall_quality_score != null ? `${qualitySummary.overall_quality_score}/100` : '--'}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="p-4 bg-slate-950/80 border border-slate-800/80 rounded-lg space-y-1">
-                  <span className="text-[11px] text-slate-400 font-mono uppercase font-semibold">Completeness Rate</span>
-                  <div className="text-2xl font-black text-emerald-400">
-                    {qualitySummary?.completeness_rate != null ? `${qualitySummary.completeness_rate}%` : '--'}
-                  </div>
-                </div>
-
-                <div className="p-4 bg-slate-950/80 border border-slate-800/80 rounded-lg space-y-1">
-                  <span className="text-[11px] text-slate-400 font-mono uppercase font-semibold">Evidence Coverage</span>
-                  <div className="text-2xl font-black text-teal-400">
-                    {qualitySummary?.evidence_coverage_rate != null ? `${qualitySummary.evidence_coverage_rate}%` : '--'}
-                  </div>
-                </div>
-              </div>
-
-              {/* Status Breakdown Bar */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
-                  <span>Product Validation Status Breakdown</span>
-                  <span>{kpis?.total_products ?? 0} Total</span>
-                </div>
-                <div className="h-3 w-full bg-slate-950 rounded-full overflow-hidden flex border border-slate-800">
-                  {qualitySummary?.verified_products_count ? (
-                    <div
-                      style={{
-                        width: `${((qualitySummary.verified_products_count / (kpis?.total_products || 1)) * 100).toFixed(1)}%`,
-                      }}
-                      className="bg-emerald-500 h-full"
-                      title={`Verified: ${qualitySummary.verified_products_count}`}
-                    ></div>
-                  ) : null}
-                  {qualitySummary?.needs_review_products_count ? (
-                    <div
-                      style={{
-                        width: `${((qualitySummary.needs_review_products_count / (kpis?.total_products || 1)) * 100).toFixed(1)}%`,
-                      }}
-                      className="bg-amber-500 h-full"
-                      title={`Needs Review: ${qualitySummary.needs_review_products_count}`}
-                    ></div>
-                  ) : null}
-                  {qualitySummary?.draft_products_count ? (
-                    <div
-                      style={{
-                        width: `${((qualitySummary.draft_products_count / (kpis?.total_products || 1)) * 100).toFixed(1)}%`,
-                      }}
-                      className="bg-slate-600 h-full"
-                      title={`Draft: ${qualitySummary.draft_products_count}`}
-                    ></div>
-                  ) : null}
-                </div>
-                <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1">
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span> Verified ({qualitySummary?.verified_products_count ?? 0})
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-amber-500"></span> Review ({qualitySummary?.needs_review_products_count ?? 0})
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-slate-600"></span> Draft ({qualitySummary?.draft_products_count ?? 0})
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between">
-              <span className="text-xs text-slate-400">
-                {qualitySummary?.products_needing_attention ?? 0} products needing attention
-              </span>
-              <button
-                onClick={() => navigate('/health')}
-                className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 flex items-center gap-1.5 transition"
-              >
-                View Catalog Health <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* PROCESSING ACTIVITY SECTION */}
-      {!isEmpty && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2.5">
-              <Activity className="w-5 h-5 text-blue-400" />
-              <h3 className="text-lg font-bold text-white">Recent Ingestion & Processing Activity</h3>
-            </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {primaryActions.map((action) => {
+              const Icon = action.icon;
+              return (
+                <button
+                  key={action.label}
+                  onClick={() => navigate(action.to)}
+                  className={`h-10 px-5 text-xs uppercase tracking-widest font-medium transition duration-150 rounded-none border ${
+                    action.primary
+                      ? 'bg-foreground text-background border-foreground hover:bg-transparent hover:text-foreground'
+                      : 'border-border bg-background text-muted-foreground hover:bg-card hover:text-foreground'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5 mr-2 inline" />
+                  {action.label}
+                </button>
+              );
+            })}
             <button
-              onClick={() => navigate('/jobs')}
-              className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
+              onClick={fetchOverview}
+              className="h-10 border border-border bg-background px-5 text-xs uppercase tracking-widest font-medium text-muted-foreground hover:text-foreground hover:bg-card transition flex items-center gap-2"
             >
-              View Jobs Queue <ArrowRight className="w-3.5 h-3.5" />
+              <RefreshCw className="w-3.5 h-3.5 text-[#9B8F77]" /> Refresh
             </button>
           </div>
+        </div>
+      </section>
 
-          {activity.length === 0 ? (
-            <p className="text-xs text-slate-500 italic py-4 text-center">No processing activity recorded yet.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-800 text-xs font-semibold uppercase text-slate-400 font-mono">
-                    <th className="py-2.5 px-3">Document / Source Name</th>
-                    <th className="py-2.5 px-3">Status</th>
-                    <th className="py-2.5 px-3">Stage</th>
-                    <th className="py-2.5 px-3">Pages</th>
-                    <th className="py-2.5 px-3">Upload / Processed Time</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {activity.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-800/40 transition">
-                      <td className="py-3 px-3 font-medium text-slate-200 flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-slate-400 shrink-0" />
-                        <span className="truncate max-w-xs" title={item.filename}>{item.filename}</span>
-                      </td>
-                      <td className="py-3 px-3">
-                        <span
-                          className={`text-[11px] font-semibold px-2 py-0.5 rounded border uppercase font-mono ${
-                            item.status === 'processed' || item.status === 'completed'
-                              ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
-                              : item.status === 'failed'
-                              ? 'bg-red-950 text-red-300 border-red-800'
-                              : item.status === 'parsing' || item.status === 'processing'
-                              ? 'bg-blue-950 text-blue-300 border-blue-800 animate-pulse'
-                              : 'bg-amber-950 text-amber-300 border-amber-800'
-                          }`}
-                        >
-                          {item.status}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-mono text-xs text-slate-300 capitalize">
-                        {item.current_stage || '—'}
-                      </td>
-                      <td className="py-3 px-3 font-mono text-xs text-slate-400">
-                        {item.page_count != null ? item.page_count : '—'}
-                      </td>
-                      <td className="py-3 px-3 font-mono text-xs text-slate-400">
-                        {formatTimestamp(item.created_at)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+      {/* KPI Cards Grid */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {kpiCards.map((card) => {
+          const Icon = card.icon;
+          return (
+            <div
+              key={card.label}
+              className="p-5 border border-border bg-card hover:bg-accent/40 transition duration-150 rounded-none space-y-3 relative select-none"
+            >
+              <div className="flex items-center justify-between text-muted-foreground">
+                <span className="text-[10px] font-light tracking-widest uppercase">{card.label}</span>
+                <Icon className={`w-4 h-4 ${card.accent}`} />
+              </div>
+              <div className="text-3xl font-serif font-normal tracking-tight text-foreground">
+                {card.value}
+              </div>
+              <p className="text-[10px] font-light uppercase tracking-wider text-muted-foreground">
+                {card.detail}
+              </p>
             </div>
-          )}
+          );
+        })}
+      </div>
+
+      {/* Empty State when no products */}
+      {!hasProducts && (
+        <div className="p-12 border border-border bg-card text-center space-y-4 rounded-none">
+          <Database className="w-12 h-12 text-muted-foreground opacity-50 mx-auto" />
+          <h3 className="font-serif text-xl font-normal text-foreground">No Products in Catalog Yet</h3>
+          <p className="text-xs uppercase tracking-wider text-muted-foreground font-light max-w-md mx-auto">
+            Upload a document (PDF, Excel, CSV, or other formats) to start extracting, enriching, and validating your product catalog.
+          </p>
+          <button
+            onClick={() => navigate('/upload')}
+            className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2"
+          >
+            <UploadCloud className="w-3.5 h-3.5" />
+            <span>Upload Your First Document</span>
+          </button>
         </div>
       )}
 
-      {/* RECENT PRODUCTS SECTION */}
-      {!isEmpty && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2.5">
-              <Database className="w-5 h-5 text-indigo-400" />
-              <h3 className="text-lg font-bold text-white">Recent Catalog Products</h3>
+      {/* Recent Enriched Products & Ingestion Activity */}
+      {hasProducts && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Recent Products */}
+          <div className="border border-border bg-card p-6 space-y-4 rounded-none">
+            <div className="flex items-center justify-between border-b border-border pb-4">
+              <h3 className="font-serif text-xl font-normal text-foreground flex items-center gap-2">
+                <Database className="w-4 h-4 text-[#9B8F77]" />
+                <span>Recently Enriched Products</span>
+              </h3>
+              <button
+                onClick={() => navigate('/catalog')}
+                className="text-[10px] uppercase tracking-widest text-[#9B8F77] hover:text-foreground font-semibold"
+              >
+                View All &rarr;
+              </button>
             </div>
-            <button
-              onClick={() => navigate('/catalog')}
-              className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
-            >
-              Open Product Catalog <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+
+            {recentProducts.length === 0 ? (
+              <div className="py-12 text-center text-xs text-muted-foreground space-y-2 font-light uppercase tracking-wider">
+                <Database className="w-8 h-8 mx-auto text-muted-foreground opacity-50" />
+                <p>No products in catalog yet.</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {recentProducts.slice(0, 5).map((prod) => (
+                  <div
+                    key={prod.id}
+                    onClick={() => navigate(`/catalog?product_id=${prod.id}`)}
+                    className="py-3 flex items-center justify-between gap-4 hover:bg-accent/40 px-2 cursor-pointer transition"
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="text-xs font-medium text-foreground truncate">{prod.product_name}</div>
+                      <div className="flex items-center gap-2 text-[10px] text-muted-foreground uppercase font-mono tracking-wider">
+                        <span>{prod.sku}</span>
+                        <span>•</span>
+                        <span>{prod.brand}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] font-mono px-2 py-0.5 border border-border bg-background">
+                        {Math.round(prod.quality_score)}%
+                      </span>
+                      <span className="text-[9px] uppercase tracking-widest px-2 py-0.5 border border-border bg-accent text-foreground">
+                        {prod.status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
-          {recentProducts.length === 0 ? (
-            <p className="text-xs text-slate-500 italic py-4 text-center">No products found in catalog.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-800 text-xs font-semibold uppercase text-slate-400 font-mono">
-                    <th className="py-2.5 px-3">Product Name</th>
-                    <th className="py-2.5 px-3">Brand</th>
-                    <th className="py-2.5 px-3">SKU</th>
-                    <th className="py-2.5 px-3">Status</th>
-                    <th className="py-2.5 px-3">Quality Score</th>
-                    <th className="py-2.5 px-3">Last Updated</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {recentProducts.map((prod) => (
-                    <tr
-                      key={prod.id}
-                      onClick={() => navigate(`/catalog?product_id=${prod.id}`)}
-                      className="cursor-pointer hover:bg-slate-800/50 transition"
-                    >
-                      <td className="py-3 px-3 font-semibold text-slate-100">{prod.product_name}</td>
-                      <td className="py-3 px-3 text-slate-300">
-                        <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-xs font-mono">
-                          {prod.brand}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-mono text-xs text-slate-400">{prod.sku}</td>
-                      <td className="py-3 px-3">
-                        <span
-                          className={`text-[11px] font-semibold px-2 py-0.5 rounded border uppercase font-mono ${
-                            prod.status === 'verified'
-                              ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
-                              : prod.status === 'needs_review'
-                              ? 'bg-amber-950 text-amber-300 border-amber-800'
-                              : 'bg-slate-800 text-slate-300 border-slate-700'
-                          }`}
-                        >
-                          {prod.status}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-mono font-bold text-emerald-400 text-xs">
-                        {prod.quality_score}/100
-                      </td>
-                      <td className="py-3 px-3 font-mono text-xs text-slate-400">
-                        {formatTimestamp(prod.updated_at)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {/* Ingestion Activity Stream */}
+          <div className="border border-border bg-card p-6 space-y-4 rounded-none">
+            <div className="flex items-center justify-between border-b border-border pb-4">
+              <h3 className="font-serif text-xl font-normal text-foreground flex items-center gap-2">
+                <Activity className="w-4 h-4 text-[#9B8F77]" />
+                <span>Recent Ingestion Activity</span>
+              </h3>
+              <button
+                onClick={() => navigate('/upload')}
+                className="text-[10px] uppercase tracking-widest text-[#9B8F77] hover:text-foreground font-semibold"
+              >
+                Batch Upload &rarr;
+              </button>
             </div>
-          )}
+
+            {activity.length === 0 ? (
+              <div className="py-12 text-center text-xs text-muted-foreground space-y-2 font-light uppercase tracking-wider">
+                <FileText className="w-8 h-8 mx-auto text-muted-foreground opacity-50" />
+                <p>No recent activity.</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {activity.slice(0, 5).map((doc) => (
+                  <div key={doc.id} className="py-3 flex items-center justify-between gap-4 px-2">
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="text-xs font-medium text-foreground truncate">{doc.filename}</div>
+                      <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
+                        <span>{formatApiDateTime(doc.created_at)}</span>
+                        {doc.page_count && <span>• {doc.page_count} pages</span>}
+                      </div>
+                    </div>
+                    <span className="text-[9px] uppercase tracking-widest px-2 py-0.5 border border-border bg-accent text-foreground">
+                      {doc.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

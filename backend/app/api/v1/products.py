@@ -114,6 +114,159 @@ def list_products(
     )
 
 
+UNILOG_252_HEADERS = [
+    "MFR URL", "Ref URL 1", "Ref URL 2", "Ref URL 3", "Ref URL 4", "Ref URL 5", "PART_NUMBER", "Dept", "Class", "Fine",
+    "SKU - MY_PART_NUMBER", "Mfg_Part_Num", "Part_Desc", "E1_Brand", "Unilog_Brand", "DIB_Brand", "Part_Manuf",
+    "MANUFACTURER_NAME", "BRAND_NAME", "TRADE_NAME", "MANUFACTURER_PART_NUMBER", "ALTERNATE_PART_NUMBER", "Classpath",
+    "MOBILE_DESC", "INVOICE_DESC", "SHORT_DESC", "LONG_DESC1", "RETAIL_DESC", "MARKETING_DESCRIPTION",
+    *[f"ITEM_FEATURES_{i}" for i in range(1, 21)],
+    "With", "Standard/Approvals", "Prop 65", "Application", "Includes", "Product Name",
+    *[col for i in range(1, 51) for col in (f"ATTRIBUTE_LABEL {i}", f"ATTRIBUTE_VALUE {i}", f"ATTRIBUTE_UOM {i}")],
+    "UPC", "EAN", "GTIN", "UNSPSC", "Warranty", "List Price", "Selling Qty", "Selling UOM",
+    "Standard Packaging Information", "LENGTH", "LENGTH_UOM", "HEIGHT", "HEIGHT_UOM", "WIDTH", "WIDTH_UOM",
+    "WEIGHT", "WEIGHT_UOM", "VOLUME", "VOLUME_UOM",
+    "Product Image", "Alternate Image 1", "Alternate Image 2", "Alternate Image 3", "Alternate Image 4",
+    "SDS", "SDS_1", "Warranty Information", "Catalog", "Specification Sheet",
+    "Instruction/Installation Manual", "Service Manual", "Owners/User Manual", "Line Drawing", "MTR", "RoHS",
+    "Full Engineering Drawing", "Energy Star Guide", "Technical Bulletin", "Submittal", "Compatibility Chart",
+    "Size Chart", "Product Label/Insert", "Video Link", "Video Link 1", "Country Of Origin", "Discontinued",
+    "Actual Image (Yes/No)"
+]
+
+
+@router.get("/export")
+def export_products(
+    format: str = "csv",
+    status: Optional[str] = None,
+    brand: Optional[str] = None,
+    category: Optional[str] = None,
+    quality_score_min: Optional[float] = None,
+    quality_score_max: Optional[float] = None,
+    schema: str = "252",  # "252" (default) or "compact"
+    session: Session = Depends(get_session),
+):
+    """
+    Export product catalog in the authoritative 252-column Unilog Delivery Format (or XLSX).
+    Maps Product, ProductAttribute, and EnrichmentResult directly into standard client delivery columns.
+    """
+    import csv as csv_module
+    import io as io_module
+    import re
+    from fastapi.responses import StreamingResponse
+
+    repo = ProductRepository(session)
+    products = repo.list_products(
+        limit=10000,
+        offset=0,
+        status=status,
+        brand=brand,
+        category=category,
+        quality_score_min=quality_score_min,
+        quality_score_max=quality_score_max,
+    )
+
+    delivery_rows = []
+
+    for prod in products:
+        # 1. Fetch latest EnrichmentResult
+        enrich_stmt = (
+            select(EnrichmentResult)
+            .where(EnrichmentResult.product_id == prod.id)
+            .order_by(EnrichmentResult.created_at.desc())
+        )
+        enrichment = session.exec(enrich_stmt).first()
+        enrich_data: Dict[str, Any] = {}
+        if enrichment and enrichment.generated_value:
+            try:
+                enrich_data = json.loads(enrichment.generated_value)
+            except Exception:
+                enrich_data = {}
+
+        existing_delivery = enrich_data.get("delivery_record")
+        if existing_delivery and isinstance(existing_delivery, dict) and len(existing_delivery) >= 200:
+            # Full 252 record already stored
+            row = {col: existing_delivery.get(col, "") for col in UNILOG_252_HEADERS}
+        else:
+            # Synthesize from Product + Attributes
+            attrs = repo.get_attributes(prod.id)
+            clean_brand_name = re.sub(r"[^A-Za-z0-9_]", "_", prod.brand.replace("®", "").replace("™", "").strip())
+            sku_val = prod.sku or prod.model or ""
+
+            row = {col: "" for col in UNILOG_252_HEADERS}
+            row["Dept"] = prod.category.split(">")[0].strip() if ">" in prod.category else prod.category
+            row["Class"] = prod.category.split(">")[1].strip() if prod.category.count(">") >= 1 else ""
+            row["Fine"] = prod.subcategory or (prod.category.split(">")[2].strip() if prod.category.count(">") >= 2 else "")
+            row["SKU - MY_PART_NUMBER"] = sku_val
+            row["Mfg_Part_Num"] = sku_val
+            row["Part_Desc"] = prod.description or prod.product_name
+            row["MANUFACTURER_NAME"] = prod.brand
+            row["BRAND_NAME"] = prod.brand
+            row["MANUFACTURER_PART_NUMBER"] = sku_val
+            row["Classpath"] = prod.category
+            row["MOBILE_DESC"] = enrich_data.get("mobile_desc") or f"{prod.brand}, {prod.product_name}, {sku_val}"
+            row["INVOICE_DESC"] = (enrich_data.get("invoice_desc") or prod.product_name[:40]).upper()
+            row["SHORT_DESC"] = enrich_data.get("short_desc") or prod.product_name
+            row["LONG_DESC1"] = enrich_data.get("long_desc") or prod.commerce_description or prod.description or prod.product_name
+            row["RETAIL_DESC"] = enrich_data.get("retail_desc") or prod.description or ""
+            row["Product Name"] = prod.product_name
+            row["Selling Qty"] = "1"
+            row["Selling UOM"] = "EA"
+            row["Product Image"] = f"{clean_brand_name}_{sku_val}.jpg" if sku_val else ""
+            row["Specification Sheet"] = f"{clean_brand_name}_{sku_val}_Specification_Sheet.pdf" if sku_val else ""
+            row["Discontinued"] = "No"
+            row["Actual Image (Yes/No)"] = "Yes" if sku_val else "No"
+
+            # Populate features 1..20
+            if prod.features:
+                for idx, feat in enumerate(prod.features[:20], start=1):
+                    row[f"ITEM_FEATURES_{idx}"] = str(feat)
+
+            # Populate attribute slots 1..50
+            for idx, a in enumerate(attrs[:50], start=1):
+                display = a.display_name or a.attribute_name
+                norm_v = str(a.normalized_value if a.normalized_value is not None else a.raw_value or "")
+                uom_v = str(a.unit or "")
+                row[f"ATTRIBUTE_LABEL {idx}"] = display
+                row[f"ATTRIBUTE_VALUE {idx}"] = norm_v
+                row[f"ATTRIBUTE_UOM {idx}"] = uom_v
+
+        delivery_rows.append(row)
+
+    headers = UNILOG_252_HEADERS
+
+    if format.lower() == "xlsx":
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Delivery Format"
+        ws.append(headers)
+        for row in delivery_rows:
+            ws.append([str(row.get(h, "") or "") for h in headers])
+
+        output = io_module.BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=Unilog_Delivery_Format_252_Columns.xlsx"},
+        )
+    else:
+        output = io_module.StringIO()
+        writer = csv_module.DictWriter(output, fieldnames=headers, extrasaction='ignore')
+        writer.writeheader()
+        for row in delivery_rows:
+            writer.writerow(row)
+
+        csv_bytes = output.getvalue().encode("utf-8")
+        return StreamingResponse(
+            io_module.BytesIO(csv_bytes),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=Unilog_Delivery_Format_252_Columns.csv"},
+        )
+
+
 @router.get("/{product_id}", response_model=Product)
 def get_product(product_id: uuid.UUID, session: Session = Depends(get_session)):
     repo = ProductRepository(session)

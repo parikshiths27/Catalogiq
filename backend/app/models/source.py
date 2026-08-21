@@ -7,12 +7,21 @@ import sqlalchemy as sa
 from sqlalchemy import JSON, DateTime
 
 class SourceType(str, Enum):
-    document = "document"
-    manufacturer_website = "manufacturer_website"
-    catalog = "catalog"
-    manual = "manual"
-    ai_inference = "ai_inference"
-    human = "human"
+    # Primary UniHack Provenance Standards
+    RAW_INPUT = "RAW_INPUT"                          # Distributor catalog / input CSV
+    REFERENCE_MASTER = "REFERENCE_MASTER"            # Canonical master data / UniCat / LOV / UOM
+    MANUFACTURER_SOURCE = "MANUFACTURER_SOURCE"      # Official manufacturer website / datasheet / manual
+    DERIVED = "DERIVED"                              # Deterministically normalized / calculated
+    MODEL_INFERENCE = "MODEL_INFERENCE"              # LLM extraction / generative content
+
+    # Legacy lowercase aliases
+    document = "RAW_INPUT"
+    catalog = "RAW_INPUT"
+    manufacturer_website = "MANUFACTURER_SOURCE"
+    manual = "REFERENCE_MASTER"
+    ai_inference = "MODEL_INFERENCE"
+    human = "DERIVED"
+
 
 class Source(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)

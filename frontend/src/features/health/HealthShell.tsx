@@ -11,10 +11,11 @@ import {
   ShieldCheck,
   FileText,
   UploadCloud,
-  HelpCircle,
   ChevronRight,
   TrendingUp
 } from 'lucide-react';
+import { ConfidenceBadge } from '../../components/ui/ConfidenceBadge';
+import { StatusBadge } from '../../components/ui/StatusBadge';
 
 export interface OverallHealth {
   quality_score: number;
@@ -102,43 +103,26 @@ export const HealthShell: React.FC = () => {
     },
   });
 
-  const getQualityBadgeClass = (score: number) => {
-    if (score >= 85) return 'bg-emerald-950/80 text-emerald-300 border-emerald-800/80';
-    if (score >= 70) return 'bg-amber-950/80 text-amber-300 border-amber-800/80';
-    return 'bg-rose-950/80 text-rose-300 border-rose-800/80';
-  };
-
-  const getStatusBadgeClass = (statusStr: string) => {
-    switch (statusStr.toLowerCase()) {
-      case 'verified':
-        return 'bg-emerald-950 text-emerald-300 border-emerald-800';
-      case 'needs_review':
-        return 'bg-amber-950 text-amber-300 border-amber-800';
-      default:
-        return 'bg-slate-800 text-slate-300 border-slate-700';
-    }
-  };
-
   if (isLoading) {
     return (
-      <div className="p-6 space-y-6 max-w-7xl mx-auto">
+      <div className="space-y-6 text-foreground animate-pulse rounded-none">
         <div className="flex items-center justify-between">
-          <div>
-            <div className="h-8 w-48 bg-slate-800 animate-pulse rounded"></div>
-            <div className="h-4 w-96 bg-slate-800/60 animate-pulse rounded mt-2"></div>
+          <div className="space-y-2">
+            <div className="h-8 w-48 bg-card border border-border"></div>
+            <div className="h-4 w-96 bg-card/60"></div>
           </div>
-          <div className="h-9 w-28 bg-slate-800 animate-pulse rounded"></div>
+          <div className="h-9 w-24 bg-card border border-border"></div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
           {[...Array(6)].map((_, i) => (
-            <div key={i} className="p-4 bg-slate-900 border border-slate-800 rounded-xl h-24 animate-pulse"></div>
+            <div key={i} className="p-4 bg-card border border-border h-24"></div>
           ))}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl h-64 animate-pulse"></div>
-          <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl h-64 lg:col-span-2 animate-pulse"></div>
+          <div className="p-5 bg-card border border-border h-64"></div>
+          <div className="p-5 bg-card border border-border h-64 lg:col-span-2"></div>
         </div>
       </div>
     );
@@ -146,18 +130,18 @@ export const HealthShell: React.FC = () => {
 
   if (isError || !data) {
     return (
-      <div className="p-6 max-w-7xl mx-auto">
-        <div className="p-8 bg-slate-900 border border-rose-900/50 rounded-xl text-center space-y-4">
-          <AlertTriangle className="w-12 h-12 text-rose-400 mx-auto" />
-          <h3 className="text-lg font-bold text-slate-100">Catalog health data couldn't be loaded</h3>
-          <p className="text-xs text-slate-400 max-w-md mx-auto font-mono">
-            {error instanceof Error ? error.message : 'An error occurred while building the operational catalog health summary.'}
+      <div className="space-y-6 text-foreground rounded-none">
+        <div className="p-8 bg-card border border-destructive/30 text-center space-y-4 rounded-none">
+          <AlertTriangle className="w-12 h-12 text-destructive mx-auto" />
+          <h3 className="text-xl font-serif font-normal text-foreground">Catalog Health Data Unavailable</h3>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto font-light">
+            {error instanceof Error ? error.message : 'An error occurred while loading catalog health summary.'}
           </p>
           <button
             onClick={() => refetch()}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition inline-flex items-center gap-2"
+            className="px-5 py-2.5 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition inline-flex items-center gap-2 rounded-none"
           >
-            <RefreshCw className="w-3.5 h-3.5" /> Retry Health Fetch
+            <RefreshCw className="w-3.5 h-3.5" /> Retry Fetch
           </button>
         </div>
       </div>
@@ -168,40 +152,36 @@ export const HealthShell: React.FC = () => {
 
   if (overall.total_products === 0) {
     return (
-      <div className="p-6 max-w-7xl mx-auto space-y-6">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center gap-2 font-mono">
-              <HeartPulse className="w-6 h-6 text-rose-400" /> Catalog Health
-            </h2>
-            <p className="text-xs text-slate-400 mt-1 font-mono">
+      <div className="space-y-8 text-foreground rounded-none">
+        <div className="flex items-center justify-between border-b border-border pb-4">
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-2 border border-[#9B8F77]/30 bg-[#9B8F77]/5 px-3 py-1 text-[9px] uppercase tracking-widest font-medium text-[#9B8F77] mb-2">
+              <HeartPulse className="w-3.5 h-3.5" />
+              Health Analytics Engine
+            </div>
+            <h1 className="text-3xl lg:text-4xl font-serif font-normal text-foreground tracking-tight">
+              Catalog Health & Quality Metrics
+            </h1>
+            <p className="text-xs uppercase tracking-wider text-muted-foreground font-light">
               Understand catalog quality, completeness, evidence coverage, and review risk.
             </p>
           </div>
         </div>
 
-        <div className="p-12 bg-slate-900 border border-slate-800 rounded-xl text-center space-y-5">
-          <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mx-auto text-slate-400">
-            <Activity className="w-8 h-8 text-indigo-400" />
-          </div>
+        <div className="p-12 border border-border bg-card text-center space-y-5 rounded-none">
+          <Activity className="w-12 h-12 text-muted-foreground opacity-50 mx-auto" />
           <div>
-            <h3 className="text-lg font-bold text-slate-100">Your catalog is empty</h3>
-            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto font-mono">
-              Upload a catalog document to start building product intelligence and health metrics.
+            <h3 className="text-xl font-serif font-normal text-foreground">Catalog is Empty</h3>
+            <p className="text-xs uppercase tracking-wider text-muted-foreground mt-1 max-w-md mx-auto font-light">
+              Upload a catalog document (PDF, Excel, CSV) to begin extracting specifications and tracking real-time data health.
             </p>
           </div>
           <div className="flex items-center justify-center gap-3 pt-2">
             <Link
               to="/upload"
-              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition flex items-center gap-2 shadow-md"
+              className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2"
             >
-              <UploadCloud className="w-4 h-4" /> Upload Document
-            </Link>
-            <Link
-              to="/catalog"
-              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition border border-slate-700 flex items-center gap-2"
-            >
-              <Layers className="w-4 h-4" /> Open Catalog
+              <UploadCloud className="w-3.5 h-3.5" /> Upload Document
             </Link>
           </div>
         </div>
@@ -242,15 +222,19 @@ export const HealthShell: React.FC = () => {
   };
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
+    <div className="space-y-8 text-foreground rounded-none">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center gap-2 font-mono">
-            <HeartPulse className="w-6 h-6 text-rose-400" /> Catalog Health Dashboard
-          </h2>
-          <p className="text-xs text-slate-400 mt-1 font-mono">
-            Understand catalog quality, completeness, evidence coverage, and review risk.
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="inline-flex items-center gap-2 border border-[#9B8F77]/30 bg-[#9B8F77]/5 px-3 py-1 text-[9px] uppercase tracking-widest font-medium text-[#9B8F77] mb-2">
+            <HeartPulse className="w-3.5 h-3.5" />
+            Health Analytics Engine
+          </div>
+          <h1 className="text-3xl lg:text-4xl font-serif font-normal text-foreground tracking-tight">
+            Catalog Health & Quality Metrics
+          </h1>
+          <p className="text-xs uppercase tracking-wider text-muted-foreground font-light">
+            Comprehensive health metrics computed across all {overall.total_products} items in your master catalog.
           </p>
         </div>
 
@@ -258,286 +242,292 @@ export const HealthShell: React.FC = () => {
           <button
             onClick={() => refetch()}
             disabled={isRefetching}
-            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-lg text-xs font-mono font-medium transition flex items-center gap-2 disabled:opacity-50"
+            className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-xs uppercase tracking-widest font-medium transition rounded-none flex items-center gap-2 disabled:opacity-50"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isRefetching ? 'animate-spin' : ''}`} /> Refresh
+            <RefreshCw className={`w-3.5 h-3.5 text-[#9B8F77] ${isRefetching ? 'animate-spin' : ''}`} /> Refresh
           </button>
         </div>
       </div>
 
-      {/* Top KPI Cards */}
+      {/* Top 6 KPI Cards with Clear Explanations */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
         {/* 1. Catalog Quality */}
-        <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl relative group">
-          <div className="flex items-center justify-between text-xs font-mono text-slate-400 mb-1">
-            <span>Catalog Quality</span>
-            <Activity className="w-4 h-4 text-emerald-400" />
+        <div className="p-5 border border-border bg-card rounded-none space-y-2 relative group">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-[10px] font-light tracking-widest uppercase">Catalog Quality</span>
+            <Activity className="w-4 h-4 text-emerald-500" />
           </div>
-          <div className="text-2xl font-bold font-mono text-emerald-400">
-            {overall.quality_score.toFixed(1)}
+          <div className="text-3xl font-serif font-normal text-emerald-500">
+            {overall.quality_score.toFixed(1)}%
           </div>
-          <p className="text-[10px] font-mono text-slate-400 mt-1">AVG(Product.quality_score)</p>
-          <div className="absolute inset-x-0 bottom-0 h-1 bg-emerald-500 rounded-b-xl"></div>
+          <p className="text-[10px] text-muted-foreground font-light leading-snug">
+            Avg quality score across all items based on completeness and evidence.
+          </p>
         </div>
 
         {/* 2. Completeness Rate */}
-        <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl relative group">
-          <div className="flex items-center justify-between text-xs font-mono text-slate-400 mb-1">
-            <span>Completeness</span>
-            <Layers className="w-4 h-4 text-indigo-400" />
+        <div className="p-5 border border-border bg-card rounded-none space-y-2 relative group">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-[10px] font-light tracking-widest uppercase">Completeness</span>
+            <Layers className="w-4 h-4 text-foreground" />
           </div>
-          <div className="text-2xl font-bold font-mono text-indigo-400">
+          <div className="text-3xl font-serif font-normal text-foreground">
             {overall.completeness_rate.toFixed(1)}%
           </div>
-          <p className="text-[10px] font-mono text-slate-400 mt-1">Required & optional coverage</p>
-          <div className="absolute inset-x-0 bottom-0 h-1 bg-indigo-500 rounded-b-xl"></div>
+          <p className="text-[10px] text-muted-foreground font-light leading-snug">
+            Required and optional attributes extracted from sources.
+          </p>
         </div>
 
         {/* 3. Verification Rate */}
-        <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl relative group">
-          <div className="flex items-center justify-between text-xs font-mono text-slate-400 mb-1">
-            <span>Verification Rate</span>
-            <CheckCircle2 className="w-4 h-4 text-cyan-400" />
+        <div className="p-5 border border-border bg-card rounded-none space-y-2 relative group">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-[10px] font-light tracking-widest uppercase">Verification</span>
+            <CheckCircle2 className="w-4 h-4 text-[#9B8F77]" />
           </div>
-          <div className="text-2xl font-bold font-mono text-cyan-400">
+          <div className="text-3xl font-serif font-normal text-[#9B8F77]">
             {overall.verification_rate.toFixed(1)}%
           </div>
-          <p className="text-[10px] font-mono text-slate-400 mt-1">{status_breakdown.verified} of {overall.total_products} verified</p>
-          <div className="absolute inset-x-0 bottom-0 h-1 bg-cyan-500 rounded-b-xl"></div>
+          <p className="text-[10px] text-muted-foreground font-light leading-snug">
+            {status_breakdown.verified} of {overall.total_products} products verified.
+          </p>
         </div>
 
         {/* 4. Evidence Coverage */}
-        <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl relative group">
-          <div className="flex items-center justify-between text-xs font-mono text-slate-400 mb-1">
-            <span>Evidence Coverage</span>
-            <ShieldCheck className="w-4 h-4 text-blue-400" />
+        <div className="p-5 border border-border bg-card rounded-none space-y-2 relative group">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-[10px] font-light tracking-widest uppercase">Evidence Cov.</span>
+            <ShieldCheck className="w-4 h-4 text-foreground" />
           </div>
-          <div className="text-2xl font-bold font-mono text-blue-400">
+          <div className="text-3xl font-serif font-normal text-foreground">
             {overall.evidence_coverage.toFixed(1)}%
           </div>
-          <p className="text-[10px] font-mono text-slate-400 mt-1">Attributes backed by evidence</p>
-          <div className="absolute inset-x-0 bottom-0 h-1 bg-blue-500 rounded-b-xl"></div>
+          <p className="text-[10px] text-muted-foreground font-light leading-snug">
+            Specs grounded in verbatim document text.
+          </p>
         </div>
 
         {/* 5. Open Reviews */}
         <Link
           to="/reviews"
-          className="p-4 bg-slate-900 border border-slate-800 hover:border-amber-700/60 rounded-xl relative group transition"
+          className="p-5 border border-border bg-card hover:border-amber-500/60 rounded-none space-y-2 transition block"
         >
-          <div className="flex items-center justify-between text-xs font-mono text-slate-400 mb-1">
-            <span>Open Reviews</span>
-            <AlertTriangle className="w-4 h-4 text-amber-400" />
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-[10px] font-light tracking-widest uppercase">Open Reviews</span>
+            <AlertTriangle className="w-4 h-4 text-amber-500" />
           </div>
-          <div className="text-2xl font-bold font-mono text-amber-400">
+          <div className="text-3xl font-serif font-normal text-amber-500">
             {issues.total_open_issues}
           </div>
-          <p className="text-[10px] font-mono text-slate-400 mt-1 group-hover:text-amber-300 transition">Inspect review queue →</p>
-          <div className="absolute inset-x-0 bottom-0 h-1 bg-amber-500 rounded-b-xl"></div>
+          <p className="text-[10px] text-[#9B8F77] font-light group-hover:text-foreground transition">
+            Inspect review queue &rarr;
+          </p>
         </Link>
 
-        {/* 6. Cross-Source Conflicts */}
+        {/* 6. Conflicts */}
         <Link
           to="/reviews?issue_type=cross_source_conflict"
-          className="p-4 bg-slate-900 border border-slate-800 hover:border-rose-700/60 rounded-xl relative group transition"
+          className="p-5 border border-border bg-card hover:border-destructive/60 rounded-none space-y-2 transition block"
         >
-          <div className="flex items-center justify-between text-xs font-mono text-slate-400 mb-1">
-            <span>Conflicts</span>
-            <TrendingUp className="w-4 h-4 text-rose-400" />
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-[10px] font-light tracking-widest uppercase">Conflicts</span>
+            <TrendingUp className="w-4 h-4 text-destructive" />
           </div>
-          <div className="text-2xl font-bold font-mono text-rose-400">
+          <div className="text-3xl font-serif font-normal text-destructive">
             {issues.cross_source_conflicts}
           </div>
-          <p className="text-[10px] font-mono text-slate-400 mt-1 group-hover:text-rose-300 transition">Resolve conflicts →</p>
-          <div className="absolute inset-x-0 bottom-0 h-1 bg-rose-500 rounded-b-xl"></div>
+          <p className="text-[10px] text-destructive font-light transition">
+            Resolve conflicts &rarr;
+          </p>
         </Link>
       </div>
 
-      {/* Section: Status Distribution & Issues Grid */}
+      {/* Section: Status Breakdown & Issue Cards Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Status Distribution */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
-          <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider font-mono flex items-center justify-between">
-            <span>Product Status Breakdown</span>
-            <span className="text-xs font-normal text-slate-400">Total: {overall.total_products}</span>
-          </h3>
-
-          {/* Stacked Bar */}
-          <div className="h-4 w-full bg-slate-950 rounded-full overflow-hidden flex border border-slate-800">
-            <div
-              style={{ width: `${(status_breakdown.verified / overall.total_products) * 100}%` }}
-              className="bg-emerald-500 h-full transition-all"
-              title={`Verified: ${status_breakdown.verified}`}
-            ></div>
-            <div
-              style={{ width: `${(status_breakdown.needs_review / overall.total_products) * 100}%` }}
-              className="bg-amber-500 h-full transition-all"
-              title={`Needs Review: ${status_breakdown.needs_review}`}
-            ></div>
-            <div
-              style={{ width: `${(status_breakdown.draft / overall.total_products) * 100}%` }}
-              className="bg-slate-600 h-full transition-all"
-              title={`Draft: ${status_breakdown.draft}`}
-            ></div>
+        <div className="p-6 border border-border bg-card space-y-5 rounded-none">
+          <div className="flex items-center justify-between border-b border-border pb-3">
+            <h3 className="text-xs font-medium uppercase tracking-widest text-[#9B8F77]">
+              Product Status Breakdown
+            </h3>
+            <span className="text-[10px] font-mono text-muted-foreground">Total: {overall.total_products}</span>
           </div>
 
-          <div className="space-y-2.5 pt-2">
-            <div className="flex items-center justify-between text-xs font-mono">
+          {/* Stacked Progress Bar */}
+          <div className="h-3 w-full bg-background border border-border rounded-none overflow-hidden flex">
+            <div
+              style={{ width: `${(status_breakdown.verified / overall.total_products) * 100}%` }}
+              className="bg-emerald-500 h-full"
+              title={`Verified: ${status_breakdown.verified}`}
+            />
+            <div
+              style={{ width: `${(status_breakdown.needs_review / overall.total_products) * 100}%` }}
+              className="bg-amber-500 h-full"
+              title={`Needs Review: ${status_breakdown.needs_review}`}
+            />
+            <div
+              style={{ width: `${(status_breakdown.draft / overall.total_products) * 100}%` }}
+              className="bg-muted-foreground/30 h-full"
+              title={`Draft: ${status_breakdown.draft}`}
+            />
+          </div>
+
+          <div className="space-y-3 pt-2 text-xs">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-                <span className="text-slate-300">Verified</span>
+                <span className="w-2 h-2 bg-emerald-500"></span>
+                <span>Verified</span>
               </div>
-              <div className="font-semibold text-slate-200">
-                {status_breakdown.verified} <span className="text-slate-400 font-normal">({((status_breakdown.verified / overall.total_products) * 100).toFixed(1)}%)</span>
+              <div className="font-mono font-medium">
+                {status_breakdown.verified} <span className="text-muted-foreground font-normal">({((status_breakdown.verified / overall.total_products) * 100).toFixed(1)}%)</span>
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-xs font-mono">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-                <span className="text-slate-300">Needs Review</span>
+                <span className="w-2 h-2 bg-amber-500"></span>
+                <span>Needs Review</span>
               </div>
-              <div className="font-semibold text-slate-200">
-                {status_breakdown.needs_review} <span className="text-slate-400 font-normal">({((status_breakdown.needs_review / overall.total_products) * 100).toFixed(1)}%)</span>
+              <div className="font-mono font-medium">
+                {status_breakdown.needs_review} <span className="text-muted-foreground font-normal">({((status_breakdown.needs_review / overall.total_products) * 100).toFixed(1)}%)</span>
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-xs font-mono">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
-                <span className="text-slate-300">Draft</span>
+                <span className="w-2 h-2 bg-muted-foreground/40"></span>
+                <span>Draft</span>
               </div>
-              <div className="font-semibold text-slate-200">
-                {status_breakdown.draft} <span className="text-slate-400 font-normal">({((status_breakdown.draft / overall.total_products) * 100).toFixed(1)}%)</span>
+              <div className="font-mono font-medium">
+                {status_breakdown.draft} <span className="text-muted-foreground font-normal">({((status_breakdown.draft / overall.total_products) * 100).toFixed(1)}%)</span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Issue Cards Grid */}
+        {/* Issue Category Cards Grid */}
         <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Link
             to="/reviews"
-            className="p-5 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl space-y-2 group transition flex flex-col justify-between"
+            className="p-5 border border-border bg-card hover:border-foreground/40 transition rounded-none flex flex-col justify-between space-y-3"
           >
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold font-mono text-slate-300 uppercase tracking-wider">Open Reviews</span>
-                <AlertTriangle className="w-4 h-4 text-amber-400" />
+                <span className="text-[10px] font-medium uppercase tracking-widest text-[#9B8F77]">Open Reviews</span>
+                <AlertTriangle className="w-4 h-4 text-amber-500" />
               </div>
-              <div className="text-3xl font-bold font-mono text-slate-100 mt-2">{issues.total_open_issues}</div>
-              <p className="text-xs text-slate-400 mt-1">Validation rules requiring approval or correction.</p>
+              <div className="text-3xl font-serif font-normal text-foreground mt-2">{issues.total_open_issues}</div>
+              <p className="text-xs text-muted-foreground mt-1 font-light">Validation rules requiring approval or correction.</p>
             </div>
-            <div className="text-xs font-mono text-indigo-400 flex items-center gap-1 group-hover:translate-x-0.5 transition pt-2">
-              Filter review queue <ChevronRight className="w-3.5 h-3.5" />
+            <div className="text-[10px] uppercase tracking-widest text-[#9B8F77] flex items-center gap-1 font-medium pt-2">
+              Filter review queue <ChevronRight className="w-3 h-3" />
             </div>
           </Link>
 
           <Link
             to="/reviews?issue_type=cross_source_conflict"
-            className="p-5 bg-slate-900 border border-slate-800 hover:border-rose-900/60 rounded-xl space-y-2 group transition flex flex-col justify-between"
+            className="p-5 border border-border bg-card hover:border-destructive/60 transition rounded-none flex flex-col justify-between space-y-3"
           >
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold font-mono text-slate-300 uppercase tracking-wider">Cross-Source Conflicts</span>
-                <TrendingUp className="w-4 h-4 text-rose-400" />
+                <span className="text-[10px] font-medium uppercase tracking-widest text-destructive">Multi-Source Conflicts</span>
+                <TrendingUp className="w-4 h-4 text-destructive" />
               </div>
-              <div className="text-3xl font-bold font-mono text-rose-400 mt-2">{issues.cross_source_conflicts}</div>
-              <p className="text-xs text-slate-400 mt-1">Inconsistent values extracted across multiple catalog sources.</p>
+              <div className="text-3xl font-serif font-normal text-destructive mt-2">{issues.cross_source_conflicts}</div>
+              <p className="text-xs text-muted-foreground mt-1 font-light">Inconsistent specifications extracted across sources.</p>
             </div>
-            <div className="text-xs font-mono text-rose-400 flex items-center gap-1 group-hover:translate-x-0.5 transition pt-2">
-              Filter conflicts <ChevronRight className="w-3.5 h-3.5" />
+            <div className="text-[10px] uppercase tracking-widest text-destructive flex items-center gap-1 font-medium pt-2">
+              Filter conflicts <ChevronRight className="w-3 h-3" />
             </div>
           </Link>
 
           <Link
             to="/reviews?issue_type=low_confidence"
-            className="p-5 bg-slate-900 border border-slate-800 hover:border-amber-900/60 rounded-xl space-y-2 group transition flex flex-col justify-between"
+            className="p-5 border border-border bg-card hover:border-amber-500/60 transition rounded-none flex flex-col justify-between space-y-3"
           >
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold font-mono text-slate-300 uppercase tracking-wider">Low Confidence Fields</span>
-                <HelpCircle className="w-4 h-4 text-amber-400" />
+                <span className="text-[10px] font-medium uppercase tracking-widest text-amber-500">Low Confidence Fields</span>
+                <ShieldCheck className="w-4 h-4 text-amber-500" />
               </div>
-              <div className="text-3xl font-bold font-mono text-amber-400 mt-2">{issues.low_confidence_attributes}</div>
-              <p className="text-xs text-slate-400 mt-1">Extraction confidence below 75% requiring human verification.</p>
+              <div className="text-3xl font-serif font-normal text-amber-500 mt-2">{issues.low_confidence_attributes}</div>
+              <p className="text-xs text-muted-foreground mt-1 font-light">Extraction confidence below 75% requiring human verification.</p>
             </div>
-            <div className="text-xs font-mono text-amber-400 flex items-center gap-1 group-hover:translate-x-0.5 transition pt-2">
-              Filter low confidence <ChevronRight className="w-3.5 h-3.5" />
+            <div className="text-[10px] uppercase tracking-widest text-amber-500 flex items-center gap-1 font-medium pt-2">
+              Filter low confidence <ChevronRight className="w-3 h-3" />
             </div>
           </Link>
 
           <Link
             to="/reviews?issue_type=missing_attribute"
-            className="p-5 bg-slate-900 border border-slate-800 hover:border-indigo-900/60 rounded-xl space-y-2 group transition flex flex-col justify-between"
+            className="p-5 border border-border bg-card hover:border-foreground/40 transition rounded-none flex flex-col justify-between space-y-3"
           >
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold font-mono text-slate-300 uppercase tracking-wider">Missing Required Fields</span>
-                <FileText className="w-4 h-4 text-indigo-400" />
+                <span className="text-[10px] font-medium uppercase tracking-widest text-[#9B8F77]">Missing Required Specs</span>
+                <FileText className="w-4 h-4 text-foreground" />
               </div>
-              <div className="text-3xl font-bold font-mono text-indigo-400 mt-2">{issues.missing_required_attributes}</div>
-              <p className="text-xs text-slate-400 mt-1">Category-specific mandatory attributes missing from extraction.</p>
+              <div className="text-3xl font-serif font-normal text-foreground mt-2">{issues.missing_required_attributes}</div>
+              <p className="text-xs text-muted-foreground mt-1 font-light">Category-specific mandatory attributes missing from extraction.</p>
             </div>
-            <div className="text-xs font-mono text-indigo-400 flex items-center gap-1 group-hover:translate-x-0.5 transition pt-2">
-              Filter missing fields <ChevronRight className="w-3.5 h-3.5" />
+            <div className="text-[10px] uppercase tracking-widest text-[#9B8F77] flex items-center gap-1 font-medium pt-2">
+              Filter missing fields <ChevronRight className="w-3 h-3" />
             </div>
           </Link>
         </div>
       </div>
 
       {/* Category & Brand Health Tables */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Category Health Table */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider font-mono">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Category Health */}
+        <div className="p-6 border border-border bg-card space-y-4 rounded-none">
+          <div className="flex items-center justify-between border-b border-border pb-3">
+            <h3 className="font-serif text-xl font-normal text-foreground">
               Category Quality Health
             </h3>
-            <span className="text-xs font-mono text-slate-400">{category_health.length} categories</span>
+            <span className="text-[10px] font-mono text-muted-foreground">{category_health.length} categories</span>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono">
+            <table className="w-full text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px]">
-                  <th className="py-2 px-2">Category</th>
+                <tr className="border-b border-border text-[9px] uppercase tracking-widest text-muted-foreground font-medium">
+                  <th className="py-2.5 px-2">Category</th>
                   <th
-                    className="py-2 px-2 cursor-pointer hover:text-slate-200"
+                    className="py-2.5 px-2 cursor-pointer hover:text-foreground"
                     onClick={() => toggleCatSort('product_count')}
                   >
                     Products {catSortField === 'product_count' ? (catSortDir === 'asc' ? '↑' : '↓') : ''}
                   </th>
                   <th
-                    className="py-2 px-2 cursor-pointer hover:text-slate-200"
+                    className="py-2.5 px-2 cursor-pointer hover:text-foreground"
                     onClick={() => toggleCatSort('avg_quality_score')}
                   >
                     Avg Quality {catSortField === 'avg_quality_score' ? (catSortDir === 'asc' ? '↑' : '↓') : ''}
                   </th>
                   <th
-                    className="py-2 px-2 cursor-pointer hover:text-slate-200"
+                    className="py-2.5 px-2 cursor-pointer hover:text-foreground"
                     onClick={() => toggleCatSort('verification_rate')}
                   >
                     Verified % {catSortField === 'verification_rate' ? (catSortDir === 'asc' ? '↑' : '↓') : ''}
                   </th>
-                  <th className="py-2 px-2 text-right">Issues</th>
+                  <th className="py-2.5 px-2 text-right">Issues</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
+              <tbody className="divide-y divide-border">
                 {sortedCategories.map((c) => (
-                  <tr key={c.category} className="hover:bg-slate-800/40 transition">
-                    <td className="py-2.5 px-2 font-semibold text-slate-200">{c.category}</td>
-                    <td className="py-2.5 px-2 text-slate-300">{c.product_count}</td>
-                    <td className="py-2.5 px-2">
-                      <span className={`px-1.5 py-0.5 rounded border text-[11px] font-bold ${getQualityBadgeClass(c.avg_quality_score)}`}>
-                        {c.avg_quality_score.toFixed(1)}
-                      </span>
+                  <tr key={c.category} className="hover:bg-accent/40 transition">
+                    <td className="py-3 px-2 font-medium text-foreground">{c.category}</td>
+                    <td className="py-3 px-2 text-muted-foreground font-mono">{c.product_count}</td>
+                    <td className="py-3 px-2">
+                      <ConfidenceBadge confidence={c.avg_quality_score} size="sm" />
                     </td>
-                    <td className="py-2.5 px-2 text-slate-300">{c.verification_rate.toFixed(1)}%</td>
-                    <td className="py-2.5 px-2 text-right">
+                    <td className="py-3 px-2 font-mono text-muted-foreground">{c.verification_rate.toFixed(1)}%</td>
+                    <td className="py-3 px-2 text-right font-mono">
                       {c.open_issues_count > 0 ? (
-                        <span className="text-amber-400 font-semibold">{c.open_issues_count} open</span>
+                        <span className="text-amber-500 font-semibold">{c.open_issues_count} open</span>
                       ) : (
-                        <span className="text-emerald-400">0</span>
+                        <span className="text-emerald-500">0</span>
                       )}
                     </td>
                   </tr>
@@ -547,57 +537,55 @@ export const HealthShell: React.FC = () => {
           </div>
         </div>
 
-        {/* Brand Health Table */}
-        <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider font-mono">
+        {/* Brand Health */}
+        <div className="p-6 border border-border bg-card space-y-4 rounded-none">
+          <div className="flex items-center justify-between border-b border-border pb-3">
+            <h3 className="font-serif text-xl font-normal text-foreground">
               Brand Quality Health
             </h3>
-            <span className="text-xs font-mono text-slate-400">{brand_health.length} brands</span>
+            <span className="text-[10px] font-mono text-muted-foreground">{brand_health.length} brands</span>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono">
+            <table className="w-full text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px]">
-                  <th className="py-2 px-2">Brand</th>
+                <tr className="border-b border-border text-[9px] uppercase tracking-widest text-muted-foreground font-medium">
+                  <th className="py-2.5 px-2">Brand</th>
                   <th
-                    className="py-2 px-2 cursor-pointer hover:text-slate-200"
+                    className="py-2.5 px-2 cursor-pointer hover:text-foreground"
                     onClick={() => toggleBrandSort('product_count')}
                   >
                     Products {brandSortField === 'product_count' ? (brandSortDir === 'asc' ? '↑' : '↓') : ''}
                   </th>
                   <th
-                    className="py-2 px-2 cursor-pointer hover:text-slate-200"
+                    className="py-2.5 px-2 cursor-pointer hover:text-foreground"
                     onClick={() => toggleBrandSort('avg_quality_score')}
                   >
                     Avg Quality {brandSortField === 'avg_quality_score' ? (brandSortDir === 'asc' ? '↑' : '↓') : ''}
                   </th>
                   <th
-                    className="py-2 px-2 cursor-pointer hover:text-slate-200"
+                    className="py-2.5 px-2 cursor-pointer hover:text-foreground"
                     onClick={() => toggleBrandSort('verification_rate')}
                   >
                     Verified % {brandSortField === 'verification_rate' ? (brandSortDir === 'asc' ? '↑' : '↓') : ''}
                   </th>
-                  <th className="py-2 px-2 text-right">Issues</th>
+                  <th className="py-2.5 px-2 text-right">Issues</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
+              <tbody className="divide-y divide-border">
                 {sortedBrands.map((b) => (
-                  <tr key={b.brand} className="hover:bg-slate-800/40 transition">
-                    <td className="py-2.5 px-2 font-semibold text-slate-200">{b.brand}</td>
-                    <td className="py-2.5 px-2 text-slate-300">{b.product_count}</td>
-                    <td className="py-2.5 px-2">
-                      <span className={`px-1.5 py-0.5 rounded border text-[11px] font-bold ${getQualityBadgeClass(b.avg_quality_score)}`}>
-                        {b.avg_quality_score.toFixed(1)}
-                      </span>
+                  <tr key={b.brand} className="hover:bg-accent/40 transition">
+                    <td className="py-3 px-2 font-medium text-foreground">{b.brand}</td>
+                    <td className="py-3 px-2 text-muted-foreground font-mono">{b.product_count}</td>
+                    <td className="py-3 px-2">
+                      <ConfidenceBadge confidence={b.avg_quality_score} size="sm" />
                     </td>
-                    <td className="py-2.5 px-2 text-slate-300">{b.verification_rate.toFixed(1)}%</td>
-                    <td className="py-2.5 px-2 text-right">
+                    <td className="py-3 px-2 font-mono text-muted-foreground">{b.verification_rate.toFixed(1)}%</td>
+                    <td className="py-3 px-2 text-right font-mono">
                       {b.open_issues_count > 0 ? (
-                        <span className="text-amber-400 font-semibold">{b.open_issues_count} open</span>
+                        <span className="text-amber-500 font-semibold">{b.open_issues_count} open</span>
                       ) : (
-                        <span className="text-emerald-400">0</span>
+                        <span className="text-emerald-500">0</span>
                       )}
                     </td>
                   </tr>
@@ -608,78 +596,77 @@ export const HealthShell: React.FC = () => {
         </div>
       </div>
 
-      {/* Attention Queue ("Products Needing Attention") */}
-      <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
-        <div className="flex items-center justify-between">
+      {/* Attention Queue: Products Needing Attention */}
+      <div className="p-6 border border-border bg-card space-y-4 rounded-none">
+        <div className="flex items-center justify-between border-b border-border pb-3">
           <div>
-            <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider font-mono flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-400" /> Products Needing Attention
+            <h3 className="font-serif text-xl font-normal text-foreground flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-500" />
+              <span>Products Needing Attention</span>
             </h3>
-            <p className="text-xs text-slate-400 font-mono mt-0.5">Top products prioritized by review status, conflicts, and quality risk.</p>
+            <p className="text-xs uppercase tracking-wider text-muted-foreground font-light mt-0.5">
+              Prioritized by review status, conflicts, and quality risk.
+            </p>
           </div>
-          <span className="text-xs font-mono text-slate-400">{products_needing_attention.length} items</span>
+          <span className="text-[10px] font-mono text-muted-foreground">{products_needing_attention.length} items</span>
         </div>
 
         {products_needing_attention.length === 0 ? (
-          <div className="p-6 bg-slate-950/60 border border-slate-800 rounded-lg text-center text-xs font-mono text-emerald-400">
-            ✓ All products are healthy. No items require immediate attention.
+          <div className="p-8 border border-border bg-background text-center text-xs text-emerald-500 font-light rounded-none">
+            ✓ All products in the catalog are healthy. No items require immediate attention.
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono">
+            <table className="w-full text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px]">
-                  <th className="py-2.5 px-3">Product / SKU</th>
-                  <th className="py-2.5 px-3">Brand</th>
-                  <th className="py-2.5 px-3">Category</th>
-                  <th className="py-2.5 px-3">Status</th>
-                  <th className="py-2.5 px-3">Quality</th>
-                  <th className="py-2.5 px-3">Issues</th>
-                  <th className="py-2.5 px-3 text-right">Action</th>
+                <tr className="border-b border-border text-[9px] uppercase tracking-widest text-muted-foreground font-medium">
+                  <th className="py-3 px-3">Product / SKU</th>
+                  <th className="py-3 px-3">Brand</th>
+                  <th className="py-3 px-3">Category</th>
+                  <th className="py-3 px-3">Status</th>
+                  <th className="py-3 px-3">Quality</th>
+                  <th className="py-3 px-3">Issues</th>
+                  <th className="py-3 px-3 text-right">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60">
+              <tbody className="divide-y divide-border">
                 {products_needing_attention.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-800/40 transition">
+                  <tr key={item.id} className="hover:bg-accent/40 transition">
                     <td className="py-3 px-3">
-                      <div className="font-semibold text-slate-100">{item.product_name}</div>
-                      <div className="text-[11px] text-slate-400 font-mono">SKU: {item.sku}</div>
+                      <div className="font-medium text-foreground">{item.product_name}</div>
+                      <div className="text-[10px] text-muted-foreground font-mono">SKU: {item.sku}</div>
                     </td>
-                    <td className="py-3 px-3 text-slate-300">{item.brand}</td>
-                    <td className="py-3 px-3 text-slate-300">{item.category}</td>
+                    <td className="py-3 px-3 text-muted-foreground font-light">{item.brand}</td>
+                    <td className="py-3 px-3 text-muted-foreground font-light">{item.category}</td>
                     <td className="py-3 px-3">
-                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded border uppercase ${getStatusBadgeClass(item.status)}`}>
-                        {item.status}
-                      </span>
+                      <StatusBadge status={item.status} size="sm" />
                     </td>
                     <td className="py-3 px-3">
-                      <span className={`px-2 py-0.5 rounded border text-[11px] font-bold ${getQualityBadgeClass(item.quality_score)}`}>
-                        {item.quality_score.toFixed(1)}
-                      </span>
+                      <ConfidenceBadge confidence={item.quality_score} size="sm" />
                     </td>
                     <td className="py-3 px-3">
                       <div className="space-y-0.5 text-[11px]">
                         {item.open_issues_count > 0 && (
-                          <div className="text-amber-400 font-semibold">{item.open_issues_count} open issues</div>
+                          <div className="text-amber-500 font-medium">{item.open_issues_count} open issues</div>
                         )}
                         {item.has_conflicts && (
-                          <div className="text-rose-400 font-semibold">⚠ Conflict detected</div>
+                          <div className="text-destructive font-medium">⚠ Conflict detected</div>
                         )}
                         {item.open_issues_count === 0 && !item.has_conflicts && (
-                          <div className="text-slate-400">—</div>
+                          <div className="text-muted-foreground font-light">—</div>
                         )}
                       </div>
                     </td>
                     <td className="py-3 px-3 text-right space-x-2">
                       <Link
-                        to="/reviews"
-                        className="px-2.5 py-1 bg-amber-600/80 hover:bg-amber-500 text-white text-[11px] font-semibold rounded transition inline-flex items-center gap-1"
+                        to={`/reviews?product_id=${item.id}`}
+                        className="h-8 px-3 bg-amber-500 text-white text-[9px] uppercase tracking-widest font-semibold transition inline-flex items-center gap-1 hover:bg-amber-600 rounded-none"
                       >
-                        Review Issues
+                        Review
                       </Link>
                       <Link
-                        to="/catalog"
-                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-semibold rounded transition inline-flex items-center gap-1"
+                        to={`/catalog?product_id=${item.id}`}
+                        className="h-8 px-3 border border-border bg-background text-muted-foreground hover:text-foreground text-[9px] uppercase tracking-widest font-medium transition inline-flex items-center gap-1 rounded-none"
                       >
                         Catalog
                       </Link>
@@ -692,48 +679,50 @@ export const HealthShell: React.FC = () => {
         )}
       </div>
 
-      {/* Worst Products ("Lowest Quality Products") */}
-      <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider font-mono flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-rose-400" /> Lowest Quality Products
-            </h3>
-            <p className="text-xs text-slate-400 font-mono mt-0.5">Bottom 10 products sorted by persisted quality_score ASC.</p>
+      {/* Lowest Quality Products */}
+      {worst_products.length > 0 && (
+        <div className="p-6 border border-border bg-card space-y-4 rounded-none">
+          <div className="flex items-center justify-between border-b border-border pb-3">
+            <div>
+              <h3 className="font-serif text-xl font-normal text-foreground flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-destructive" />
+                <span>Lowest Quality Products</span>
+              </h3>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground font-light mt-0.5">
+                Bottom products sorted by quality score.
+              </p>
+            </div>
+            <span className="text-[10px] font-mono text-muted-foreground">{worst_products.length} items</span>
           </div>
-          <span className="text-xs font-mono text-slate-400">{worst_products.length} items</span>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {worst_products.map((item) => (
-            <div key={item.id} className="p-4 bg-slate-950 border border-slate-800/80 rounded-lg flex items-center justify-between gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="font-semibold text-slate-200 text-xs truncate">{item.product_name}</div>
-                <div className="flex items-center gap-2 mt-1 text-[11px] font-mono text-slate-400">
-                  <span>{item.brand}</span>
-                  <span>•</span>
-                  <span>SKU: {item.sku}</span>
-                  <span>•</span>
-                  <span>{item.category}</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {worst_products.map((item) => (
+              <div key={item.id} className="p-4 border border-border bg-background flex items-center justify-between gap-4 rounded-none">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="font-medium text-foreground text-xs truncate">{item.product_name}</div>
+                  <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+                    <span>{item.brand}</span>
+                    <span>•</span>
+                    <span>SKU: {item.sku}</span>
+                    <span>•</span>
+                    <span>{item.category}</span>
+                  </div>
                 </div>
-              </div>
-              <div className="text-right">
-                <div className={`px-2.5 py-1 rounded border text-xs font-bold font-mono inline-block ${getQualityBadgeClass(item.quality_score)}`}>
-                  {item.quality_score.toFixed(1)}
-                </div>
-                <div className="mt-1">
+                <div className="text-right flex items-center gap-3 shrink-0">
+                  <ConfidenceBadge confidence={item.quality_score} size="sm" />
                   <Link
-                    to="/catalog"
-                    className="text-[10px] font-mono text-indigo-400 hover:text-indigo-300 flex items-center justify-end gap-0.5"
+                    to={`/catalog?product_id=${item.id}`}
+                    className="text-[10px] uppercase tracking-widest font-semibold text-[#9B8F77] hover:text-foreground flex items-center gap-0.5"
                   >
-                    Details <ChevronRight className="w-3 h-3" />
+                    <span>Details</span>
+                    <ChevronRight className="w-3 h-3" />
                   </Link>
                 </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

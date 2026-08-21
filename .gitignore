@@ -1,34 +1,89 @@
-# Environments
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# =============================================================================
+# CatalogIQ — Git Ignore Rules
+# =============================================================================
 
-# Python
+# --- Environment & Secret Files ---
+.env
+.env.*
+.env.local
+.env.development
+.env.test
+.env.production
+!.env.example
+
+# --- Scratch, Experimental & Teammate Repositories ---
+scratch/
+scratch/*
+scratch/aditi_repo/
+
+# --- Python Virtual Environments ---
+venv/
+.venv/
+env/
+ENV/
+backend/venv/
+backend/.venv/
+.Python
+
+# --- Python Caches & Bytecode ---
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
-venv/
 .pytest_cache/
 .asyncio_cache/
-*.db
-*.db-journal
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+*.log
 
-# Node / Frontend
+# --- Node & Frontend Build Outputs ---
 node_modules/
+frontend/node_modules/
 dist/
 dist-ssr/
-*.local
-.eslintcache
+frontend/dist/
+frontend/dist-ssr/
 .vite/
+frontend/.vite/
+*.tsbuildinfo
+vite.config.ts.timestamp-*
+frontend/vite.config.ts.timestamp-*
 
-# Local Storage Uploads
-backend/storage/
+# --- IDE & Editor Artifacts ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+
+# --- Local Storage, Uploads & Databases ---
 storage/
+backend/storage/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+backend/*.db
+backend/*.db-journal
 
-# OS Files
+# --- Local Temporary Dumps & Test Artifacts ---
+backend/phase11_benchmark.txt
+backend/response.json
+backend/headers.txt
+backend/fresh_motor_test.pdf
+backend/synthetic_motor.pdf
+
+# --- Operating System Files ---
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db

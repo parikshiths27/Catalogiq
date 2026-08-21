@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://localhost:6333"
 
     STORAGE_PROVIDER: str = "local"
-    LOCAL_STORAGE_DIR: str = "./storage"
+    LOCAL_STORAGE_DIR: str = str(_BACKEND_DIR / "storage")
 
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # --- Gemini (production) ---
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
 
     # --- Embedding ---
     EMBEDDING_PROVIDER: str = "fastembed"
@@ -69,6 +69,13 @@ class Settings(BaseSettings):
 
     WORKER_CONCURRENCY: int = 4
     MAX_UPLOAD_SIZE_MB: int = 50
+
+    # --- Archive Safety Limits ---
+    MAX_ARCHIVE_SIZE_MB: int = 50
+    MAX_ARCHIVE_EXTRACTED_SIZE_MB: int = 200
+    MAX_ARCHIVE_FILES: int = 100
+    MAX_ARCHIVE_FILE_SIZE_MB: int = 50
+
     CONFIDENCE_THRESHOLD_HIGH: float = 0.85  # 85/100 — verified
     CONFIDENCE_THRESHOLD_MEDIUM: float = 0.60  # 60/100 — needs review below
 

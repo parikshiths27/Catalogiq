@@ -1,86 +1,132 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadCloud, CheckCircle, AlertTriangle, RefreshCw, Eye, FileText, ArrowRight, Loader2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import {
+  UploadCloud,
+  AlertTriangle,
+  FileText,
+  Loader2,
+  FolderPlus,
+  FileSpreadsheet,
+  FileArchive,
+  Layers,
+  X,
+  FileCode,
+  Sparkles,
+  Database
+} from 'lucide-react';
+import { StatusBadge } from '../../components/ui/StatusBadge';
 
-interface JobStep {
-  id: string;
-  stage: string;
+interface BatchDocumentStatus {
+  document_id: string | null;
+  filename: string;
   status: string;
-  attempt_count: number;
-  error_message: string | null;
+  job_id: string | null;
+  mime_type?: string | null;
+  file_size?: number | null;
+  cached?: boolean;
+  error_message?: string | null;
+  updated_at: string | null;
+}
+
+interface BatchDetail {
+  batch_id: string;
+  name: string | null;
+  status: string;
+  total_files: number;
+  processed_files: number;
+  completed_files: number;
+  failed_files: number;
+  processing_files: number;
+  progress_percentage: number;
   created_at: string;
+  updated_at: string;
   completed_at: string | null;
+  documents: BatchDocumentStatus[];
 }
 
-interface JobDetail {
-  job_id: string;
-  status: string;
-  total_items: number;
-  completed_items: number;
-  failed_items: number;
-  current_stage: string;
-  error_message: string | null;
-  steps: JobStep[];
+interface RejectedFileResult {
+  filename: string;
+  error: string;
 }
+
+const SUPPORTED_FORMATS = [
+  { label: 'PDF', ext: '.pdf', icon: FileText },
+  { label: 'Excel', ext: '.xlsx', icon: FileSpreadsheet },
+  { label: 'CSV', ext: '.csv', icon: FileSpreadsheet },
+  { label: 'Word', ext: '.docx', icon: FileText },
+  { label: 'Text/MD', ext: '.txt,.md', icon: FileCode },
+  { label: 'JSON/XML', ext: '.json,.xml', icon: FileCode },
+  { label: 'HTML', ext: '.html,.htm', icon: FileCode },
+  { label: 'ZIP Archive', ext: '.zip', icon: FileArchive },
+];
+
+const SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.csv', '.txt', '.json', '.xml', '.html', '.htm', '.md', '.zip'];
 
 export const UploadShell: React.FC = () => {
   const [dragActive, setDragActive] = useState(false);
-  const [file, setFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  // Processing state
-  const [docId, setDocId] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [jobDetail, setJobDetail] = useState<JobDetail | null>(null);
-  const [viewingParsed, setViewingParsed] = useState(false);
-  const [parsedJson, setParsedJson] = useState<any | null>(null);
-  const [loadingParsed, setLoadingParsed] = useState(false);
+
+  // Batch progress state
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [batchDetail, setBatchDetail] = useState<BatchDetail | null>(null);
+  const [rejectedUploads, setRejectedUploads] = useState<RejectedFileResult[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
-  // Poll job status every 1.5 seconds if active
+  // Poll batch status every 1.5s until terminal state
   useEffect(() => {
-    if (!jobId) return;
+    if (!batchId) return;
 
-    const pollStatus = async () => {
+    const pollBatch = async () => {
       try {
-        const res = await fetch(`/api/v1/jobs/${jobId}`);
-        if (!res.ok) throw new Error("Failed to fetch job status");
-        const data: JobDetail = await res.json();
-        setJobDetail(data);
+        const res = await fetch(`/api/v1/documents/batches/${batchId}`);
+        if (!res.ok) throw new Error("Failed to fetch batch status");
+        const data: BatchDetail = await res.json();
+        setBatchDetail(data);
 
-        // Stop polling if final state reached
-        if (['completed', 'failed', 'cancelled'].includes(data.status.toLowerCase())) {
+        // Terminal state reached
+        if (['completed', 'partially_completed', 'failed', 'cancelled'].includes(data.status.toLowerCase())) {
           clearInterval(intervalId);
         }
       } catch (err) {
-        console.error("Polling error:", err);
+        console.error("Batch polling error:", err);
       }
     };
 
-    pollStatus(); // initial check
-    const intervalId = setInterval(pollStatus, 1500);
-
+    pollBatch();
+    const intervalId = setInterval(pollBatch, 1500);
     return () => clearInterval(intervalId);
-  }, [jobId]);
+  }, [batchId]);
 
-  // Client-side file validation
-  const validateFile = (file: File): boolean => {
-    setError(null);
+  const isFileSupported = (file: File): { supported: boolean; reason?: string } => {
+    const fileNameLower = file.name.toLowerCase();
     const maxMB = 50;
     const maxBytes = maxMB * 1024 * 1024;
 
     if (file.size > maxBytes) {
-      setError(`File size exceeds limit of ${maxMB}MB.`);
-      return false;
+      return { supported: false, reason: `Exceeds max size limit of ${maxMB}MB` };
     }
 
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setError("Only PDF files are supported for ingestion in Phase 3.");
-      return false;
+    const matched = SUPPORTED_EXTENSIONS.some(ext => fileNameLower.endsWith(ext));
+    if (!matched) {
+      return { supported: false, reason: "Unsupported file format" };
     }
 
-    return true;
+    return { supported: true };
+  };
+
+  const handleFilesAdded = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const newFiles = Array.from(files);
+    setSelectedFiles(prev => {
+      const existingNames = new Set(prev.map(f => f.name));
+      const filtered = newFiles.filter(f => !existingNames.has(f.name));
+      return [...prev, ...filtered];
+    });
+    setError(null);
   };
 
   const handleDrag = (e: React.DragEvent) => {
@@ -97,380 +143,388 @@ export const UploadShell: React.FC = () => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const droppedFile = e.dataTransfer.files[0];
-      if (validateFile(droppedFile)) {
-        setFile(droppedFile);
-      }
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesAdded(e.dataTransfer.files);
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const selectedFile = e.target.files[0];
-      if (validateFile(selectedFile)) {
-        setFile(selectedFile);
-      }
-    }
+  const removeFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const triggerFileInput = () => {
-    fileInputRef.current?.click();
+  const clearSelection = () => {
+    setSelectedFiles([]);
+    setError(null);
   };
 
-  // Perform upload
-  const handleUpload = async () => {
-    if (!file) return;
+  const handleStartBatchUpload = async () => {
+    if (selectedFiles.length === 0) return;
+
     setUploading(true);
     setError(null);
-    setViewingParsed(false);
-    setParsedJson(null);
+    setRejectedUploads([]);
+    setBatchDetail(null);
 
     const formData = new FormData();
-    formData.append("file", file);
+    selectedFiles.forEach(file => {
+      formData.append("files", file);
+    });
 
     try {
-      const res = await fetch("/api/v1/documents/upload", {
+      const res = await fetch("/api/v1/documents/upload-batch", {
         method: "POST",
         body: formData,
       });
 
       if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || "Upload failed");
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Upload failed with HTTP ${res.status}`);
       }
 
-      const data = await res.json();
-      setDocId(data.document_id);
-      setJobId(data.job_id);
-      
-      // If it was already completed, stop loading and mock finished job info
-      if (data.status === "already_processed") {
-        setJobDetail({
-          job_id: data.job_id || "cached",
-          status: "completed",
-          total_items: 1,
-          completed_items: 1,
-          failed_items: 0,
-          current_stage: "completed",
-          error_message: null,
-          steps: []
-        });
-      } else {
-        setJobDetail(null);
-      }
+      const result = await res.json();
+      setBatchId(result.batch_id);
 
+      if (result.rejected_files && result.rejected_files.length > 0) {
+        setRejectedUploads(result.rejected_files);
+      }
     } catch (err: any) {
-      setError(err.message || "An unexpected error occurred during upload.");
+      setError(err?.message || "Failed to initiate batch upload");
     } finally {
       setUploading(false);
     }
   };
 
-  // Fetch parsed JSON for inspection
-  const handleViewParsed = async () => {
-    if (!docId) return;
-    setLoadingParsed(true);
-    try {
-      const res = await fetch(`/api/v1/documents/${docId}/parsed`);
-      if (!res.ok) throw new Error("Failed to load parsed layout data");
-      const data = await res.json();
-      setParsedJson(data);
-      setViewingParsed(true);
-    } catch (err: any) {
-      setError(err.message || "Could not retrieve parsed document output.");
-    } finally {
-      setLoadingParsed(false);
-    }
+  const resetAll = () => {
+    setBatchId(null);
+    setBatchDetail(null);
+    setSelectedFiles([]);
+    setRejectedUploads([]);
+    setError(null);
   };
 
-  // Trigger retry on failed job
-  const handleRetry = async () => {
-    if (!jobId) return;
-    setError(null);
-    try {
-      const res = await fetch(`/api/v1/jobs/${jobId}/retry`, { method: "POST" });
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || "Retry trigger failed");
-      }
-      // Re-trigger polling
-      setJobDetail(prev => prev ? { ...prev, status: 'queued' } : null);
-    } catch (err: any) {
-      setError(err.message);
-    }
-  };
-
-  // Force reprocess document
-  const handleForceReprocess = async () => {
-    if (!docId) return;
-    setUploading(true);
-    setError(null);
-    setViewingParsed(false);
-    setParsedJson(null);
-    try {
-      const res = await fetch(`/api/v1/documents/${docId}/reprocess`, { method: "POST" });
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || "Reprocessing trigger failed");
-      }
-      const data = await res.json();
-      setJobId(data.job_id);
-      setJobDetail(null);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const resetUploader = () => {
-    setFile(null);
-    setDocId(null);
-    setJobId(null);
-    setJobDetail(null);
-    setError(null);
-    setViewingParsed(false);
-    setParsedJson(null);
-  };
+  const isTerminalBatch = batchDetail && ['completed', 'partially_completed', 'failed'].includes(batchDetail.status.toLowerCase());
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
-      <div>
-        <h2 className="text-3xl font-bold tracking-tight">Ingest Documents</h2>
-        <p className="text-sm text-muted-foreground">Upload industrial PDFs to execute layout parsing and generate normalized intermediate structures.</p>
+    <div className="space-y-8 max-w-5xl mx-auto text-foreground rounded-none">
+      {/* Header */}
+      <div className="space-y-1">
+        <div className="inline-flex items-center gap-2 border border-[#9B8F77]/30 bg-[#9B8F77]/5 px-3 py-1 text-[9px] uppercase tracking-widest font-medium text-[#9B8F77] mb-2">
+          <Sparkles className="w-3.5 h-3.5" />
+          Batch Ingestion Gateway
+        </div>
+        <h1 className="text-3xl lg:text-4xl font-serif font-normal text-foreground tracking-tight">
+          Import & Multi-Source Ingestion
+        </h1>
+        <p className="text-xs uppercase tracking-wider text-muted-foreground font-light">
+          Upload single files, multi-file batches, folder trees, or ZIP archives for autonomous parsing and enrichment.
+        </p>
       </div>
 
-      {error && (
-        <div className="bg-destructive/10 border border-destructive/20 text-destructive text-sm rounded-lg p-4 flex items-start space-x-3">
-          <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <span className="font-semibold">Error:</span> {error}
-          </div>
-        </div>
-      )}
-
-      {/* Upload Dropzone */}
-      {!jobId && !uploading && (
-        <div 
-          className={`border-2 border-dashed rounded-xl p-12 flex flex-col items-center justify-center text-center space-y-4 transition ${
-            dragActive ? 'border-primary bg-primary/5' : 'border-border bg-card'
-          }`}
-          onDragEnter={handleDrag}
-          onDragOver={handleDrag}
-          onDragLeave={handleDrag}
-          onDrop={handleDrop}
-        >
-          <div className="w-16 h-16 rounded-full bg-secondary flex items-center justify-center">
-            <UploadCloud className="w-8 h-8 text-muted-foreground" />
-          </div>
-          
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            accept=".pdf" 
-            className="hidden" 
-          />
-
-          {file ? (
-            <div className="space-y-2">
-              <p className="font-medium text-foreground">{file.name}</p>
-              <p className="text-xs text-muted-foreground">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
-              <div className="flex justify-center space-x-2 pt-2">
-                <button 
-                  onClick={handleUpload}
-                  className="px-4 py-2 bg-primary text-primary-foreground font-medium rounded-lg text-sm transition hover:opacity-90 flex items-center space-x-2"
-                >
-                  <span>Start Ingestion</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-                <button 
-                  onClick={resetUploader}
-                  className="px-4 py-2 border bg-background text-foreground font-medium rounded-lg text-sm hover:bg-muted transition"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <h3 className="font-semibold text-lg">Drag & drop your PDF here</h3>
-              <p className="text-sm text-muted-foreground">Supports engineering datasheets, drawings, or product specs up to 50MB</p>
-              <button 
-                onClick={triggerFileInput}
-                className="px-4 py-2 bg-secondary text-secondary-foreground font-medium rounded-lg text-sm transition hover:bg-secondary/80 mt-2"
-              >
-                Browse Files
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Uploading Status */}
-      {uploading && (
-        <div className="bg-card border rounded-xl p-12 text-center flex flex-col items-center justify-center space-y-4">
-          <Loader2 className="w-10 h-10 text-primary animate-spin" />
-          <h3 className="font-semibold text-lg">Ingesting Document...</h3>
-          <p className="text-sm text-muted-foreground">Validating signatures, calculating SHA-256 hash, and uploading original file to store.</p>
-        </div>
-      )}
-
-      {/* Active Job Progress & Details */}
-      {jobId && jobDetail && (
+      {/* Upload Wizard Form */}
+      {!batchId ? (
         <div className="space-y-6">
-          <div className="bg-card border rounded-xl p-6 space-y-6 shadow-sm">
-            <div className="flex justify-between items-start">
-              <div>
-                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Processing Status</span>
-                <h3 className="text-xl font-bold flex items-center space-x-2 mt-1">
-                  <FileText className="w-5 h-5 text-muted-foreground" />
-                  <span>{file?.name || "Catalog Document"}</span>
-                </h3>
-                <p className="text-xs text-muted-foreground mt-1">Job ID: <code className="bg-muted px-1 py-0.5 rounded">{jobId}</code></p>
-              </div>
-              
-              <div className="flex items-center space-x-2">
-                <span className={`px-2.5 py-1 text-xs font-semibold rounded-full capitalize ${
-                  jobDetail.status === 'completed' ? 'bg-success/15 text-success' :
-                  jobDetail.status === 'failed' ? 'bg-destructive/15 text-destructive' :
-                  'bg-warning/15 text-warning animate-pulse'
-                }`}>
-                  {jobDetail.status}
-                </span>
-              </div>
+          {/* Dropzone Card */}
+          <div
+            onDragEnter={handleDrag}
+            onDragLeave={handleDrag}
+            onDragOver={handleDrag}
+            onDrop={handleDrop}
+            className={`p-10 border border-dashed text-center transition-all duration-200 rounded-none relative bg-card ${
+              dragActive
+                ? 'border-foreground bg-accent/30'
+                : 'border-border hover:border-muted-foreground'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={SUPPORTED_EXTENSIONS.join(',')}
+              onChange={(e) => handleFilesAdded(e.target.files)}
+              className="hidden"
+            />
+            <input
+              ref={folderInputRef}
+              type="file"
+              // @ts-ignore
+              webkitdirectory=""
+              // @ts-ignore
+              directory=""
+              multiple
+              onChange={(e) => handleFilesAdded(e.target.files)}
+              className="hidden"
+            />
+
+            <div className="w-14 h-14 border border-border bg-background text-[#9B8F77] flex items-center justify-center mx-auto mb-4 rounded-none">
+              <UploadCloud className="w-7 h-7" />
             </div>
 
-            {/* Ingestion Steps Timeline */}
-            <div className="border-t pt-6">
-              <h4 className="font-semibold text-sm mb-4">Pipeline Stages</h4>
-              <div className="relative border-l-2 border-muted pl-6 ml-4 space-y-6">
-                
-                {/* Stage 1: Upload */}
-                <div className="relative">
-                  <div className="absolute -left-[33px] bg-success text-success-foreground rounded-full w-6 h-6 flex items-center justify-center border-4 border-card">
-                    <CheckCircle className="w-3 h-3" />
-                  </div>
-                  <div>
-                    <h5 className="text-sm font-semibold text-foreground">File Ingestion & Storage</h5>
-                    <p className="text-xs text-muted-foreground mt-0.5">SHA-256 registered, PDF signature verified, original stored in bucket.</p>
-                  </div>
-                </div>
+            <h3 className="text-xl font-serif font-normal text-foreground mb-1">
+              Drag and drop your catalog files or ZIP archives
+            </h3>
+            <p className="text-xs uppercase tracking-wider text-muted-foreground max-w-md mx-auto mb-6 font-light">
+              Batch ingestion processes each document independently with automatic content deduplication and partial failure isolation.
+            </p>
 
-                {/* Stage 2: Parsing */}
-                <div className="relative">
-                  <div className={`absolute -left-[33px] rounded-full w-6 h-6 flex items-center justify-center border-4 border-card ${
-                    jobDetail.status === 'completed' ? 'bg-success text-success-foreground' :
-                    jobDetail.status === 'failed' ? 'bg-destructive text-destructive-foreground' :
-                    jobDetail.status === 'processing' ? 'bg-warning text-warning-foreground animate-spin' :
-                    'bg-muted text-muted-foreground'
-                  }`}>
-                    {jobDetail.status === 'completed' ? <CheckCircle className="w-3 h-3" /> :
-                     jobDetail.status === 'failed' ? <AlertTriangle className="w-3 h-3" /> :
-                     jobDetail.status === 'processing' ? <RefreshCw className="w-3 h-3" /> :
-                     <div className="w-1.5 h-1.5 rounded-full bg-current" />}
-                  </div>
-                  <div>
-                    <h5 className="text-sm font-semibold text-foreground">Layout Parsing & Structured Output (Docling)</h5>
-                    <p className="text-xs text-muted-foreground mt-0.5">Extract layout structure, preserve tabular matrices, output page text structures.</p>
-                    
-                    {jobDetail.error_message && (
-                      <div className="bg-destructive/10 border border-destructive/20 text-destructive text-xs rounded p-3 mt-2 font-mono">
-                        {jobDetail.error_message}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Operational Action Footer */}
-            <div className="border-t pt-6 flex justify-between">
-              <button 
-                onClick={resetUploader}
-                className="px-4 py-2 border rounded-lg text-sm hover:bg-muted font-medium transition"
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none flex items-center gap-2"
               >
-                Upload Another File
+                <FileText className="w-3.5 h-3.5" />
+                <span>Select Files / ZIP</span>
               </button>
 
-              <div className="flex space-x-2">
-                {jobDetail.status === 'failed' && (
-                  <button 
-                    onClick={handleRetry}
-                    className="px-4 py-2 bg-warning text-warning-foreground font-medium rounded-lg text-sm hover:opacity-90 flex items-center space-x-1.5 transition"
-                  >
-                    <RefreshCw className="w-4 h-4 animate-spin-reverse" />
-                    <span>Retry Pipeline</span>
-                  </button>
-                )}
-
-                {jobDetail.status === 'completed' && (
-                  <>
-                    <button 
-                      onClick={handleForceReprocess}
-                      className="px-4 py-2 border text-foreground font-medium rounded-lg text-sm hover:bg-muted flex items-center space-x-1.5 transition"
-                    >
-                      <RefreshCw className="w-4 h-4" />
-                      <span>Force Reprocess</span>
-                    </button>
-                    
-                    <button 
-                      onClick={handleViewParsed}
-                      disabled={loadingParsed}
-                      className="px-4 py-2 bg-primary text-primary-foreground font-medium rounded-lg text-sm hover:opacity-90 flex items-center space-x-1.5 transition disabled:opacity-50"
-                    >
-                      {loadingParsed ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Eye className="w-4 h-4" />
-                      )}
-                      <span>View Intermediate JSON</span>
-                    </button>
-                  </>
-                )}
-              </div>
+              <button
+                type="button"
+                onClick={() => folderInputRef.current?.click()}
+                className="h-10 px-6 bg-background text-muted-foreground hover:text-foreground border border-border hover:bg-card text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none flex items-center gap-2"
+              >
+                <FolderPlus className="w-3.5 h-3.5" />
+                <span>Upload Folder</span>
+              </button>
             </div>
           </div>
 
-          {/* JSON Viewer Inspector */}
-          {viewingParsed && parsedJson && (
-            <div className="bg-card border rounded-xl p-6 space-y-4 shadow-sm">
-              <div className="flex justify-between items-center border-b pb-4">
+          {/* Supported Formats Legend */}
+          <div className="p-5 border border-border bg-card rounded-none">
+            <div className="text-[10px] font-medium uppercase tracking-widest text-[#9B8F77] mb-3">
+              Supported Ingestion Formats
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {SUPPORTED_FORMATS.map((fmt) => {
+                const Icon = fmt.icon;
+                return (
+                  <div
+                    key={fmt.label}
+                    className="flex items-center gap-2.5 p-2.5 border border-border bg-background/60 text-xs rounded-none"
+                  >
+                    <Icon className="w-4 h-4 text-[#9B8F77] shrink-0" />
+                    <div>
+                      <div className="font-medium text-foreground text-[11px]">{fmt.label}</div>
+                      <div className="text-[9px] text-muted-foreground font-mono">{fmt.ext}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Selected Files Staging List */}
+          {selectedFiles.length > 0 && (
+            <div className="p-6 border border-border bg-card space-y-4 rounded-none">
+              <div className="flex items-center justify-between">
                 <div>
-                  <h4 className="font-bold text-lg">Parsed Intermediate Representation</h4>
-                  <p className="text-xs text-muted-foreground mt-0.5">Content Hash: <code>{parsedJson.content_hash}</code></p>
-                </div>
-                <span className="text-xs bg-secondary text-secondary-foreground px-2.5 py-1 rounded-md font-mono">
-                  {parsedJson.parser?.name} v{parsedJson.parser?.version}
-                </span>
-              </div>
-              
-              {/* Basic metadata list */}
-              <div className="grid grid-cols-3 gap-4 text-sm bg-muted/40 p-4 rounded-lg">
-                <div>
-                  <span className="text-xs text-muted-foreground block">Page Count</span>
-                  <span className="font-semibold text-foreground">{parsedJson.metadata?.page_count || parsedJson.pages?.length}</span>
-                </div>
-                <div>
-                  <span className="text-xs text-muted-foreground block">Title Reference</span>
-                  <span className="font-semibold text-foreground truncate block">{parsedJson.metadata?.title || "N/A"}</span>
-                </div>
-                <div>
-                  <span className="text-xs text-muted-foreground block">Images Extracted</span>
-                  <span className="font-semibold text-foreground">
-                    {parsedJson.pages?.reduce((acc: number, p: any) => acc + (p.images?.length || 0), 0)}
+                  <h3 className="font-serif text-lg font-normal text-foreground">
+                    Selected Files Staging ({selectedFiles.length})
+                  </h3>
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Total: {(selectedFiles.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(2)} MB
                   </span>
                 </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={clearSelection}
+                    className="text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground"
+                  >
+                    Clear All
+                  </button>
+                  <button
+                    onClick={handleStartBatchUpload}
+                    disabled={uploading}
+                    className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none flex items-center gap-2 disabled:opacity-50"
+                  >
+                    {uploading ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Starting Ingestion...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5 text-[#9B8F77]" />
+                        <span>Start Batch Import ({selectedFiles.length})</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
-              {/* JSON tree viewer */}
-              <div className="bg-muted p-4 rounded-lg overflow-x-auto max-h-96 text-xs font-mono">
-                <pre>{JSON.stringify(parsedJson, null, 2)}</pre>
+              {/* Table of selected files */}
+              <div className="max-h-64 overflow-y-auto divide-y divide-border pr-1">
+                {selectedFiles.map((file, idx) => {
+                  const validation = isFileSupported(file);
+                  return (
+                    <div key={`${file.name}-${idx}`} className="py-2.5 flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
+                        <span className="text-xs font-light text-foreground truncate">{file.name}</span>
+                        <span className="text-[10px] font-mono text-muted-foreground">
+                          {(file.size / 1024).toFixed(1)} KB
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {validation.supported ? (
+                          <span className="text-[9px] font-mono uppercase tracking-widest px-2 py-0.5 border border-border bg-background text-emerald-500">
+                            Valid
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-mono uppercase tracking-widest px-2 py-0.5 border border-destructive/40 bg-destructive/10 text-destructive">
+                            {validation.reason}
+                          </span>
+                        )}
+                        <button
+                          onClick={() => removeFile(idx)}
+                          className="p-1 text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
+
+          {error && (
+            <div className="p-4 border border-destructive/40 bg-destructive/10 flex items-center gap-3 text-xs text-destructive rounded-none">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* Active Batch Progress Dashboard */
+        <div className="space-y-6">
+          <div className="p-6 border border-border bg-card space-y-6 rounded-none">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-light uppercase tracking-widest text-muted-foreground">
+                    Batch Ingestion Job
+                  </span>
+                  <span className="text-[10px] font-mono text-[#9B8F77] px-2 py-0.5 border border-border bg-background">
+                    {batchId.slice(0, 8)}...
+                  </span>
+                </div>
+                <h2 className="text-2xl font-serif font-normal text-foreground">
+                  {batchDetail ? `${batchDetail.progress_percentage}% Completed` : 'Initializing Batch...'}
+                </h2>
+              </div>
+
+              <div className="flex items-center gap-3">
+                {isTerminalBatch ? (
+                  <>
+                    <button
+                      onClick={resetAll}
+                      className="h-10 px-5 border border-border bg-background text-xs uppercase tracking-widest font-medium text-muted-foreground hover:text-foreground hover:bg-card transition"
+                    >
+                      New Import
+                    </button>
+                    <Link
+                      to="/catalog"
+                      className="h-10 px-5 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-xs uppercase tracking-widest font-semibold transition flex items-center gap-2"
+                    >
+                      <Database className="w-3.5 h-3.5" />
+                      <span>View Products</span>
+                    </Link>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[#9B8F77] animate-pulse">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Processing Ingestion Stages...</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="space-y-2">
+              <div className="h-2 bg-background border border-border rounded-none overflow-hidden">
+                <div
+                  className="h-full bg-foreground transition-all duration-300"
+                  style={{ width: `${batchDetail?.progress_percentage ?? 0}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                <span>
+                  {batchDetail ? `${batchDetail.completed_files} of ${batchDetail.total_files} completed` : '0 files'}
+                </span>
+                <span>{batchDetail?.failed_files ?? 0} failed</span>
+              </div>
+            </div>
+
+            {/* Metrics Counters */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-border text-center">
+              <div className="p-3 border border-border bg-background rounded-none">
+                <div className="text-xl font-mono text-foreground">{batchDetail?.total_files ?? 0}</div>
+                <div className="text-[9px] text-muted-foreground uppercase tracking-widest font-light">Total Items</div>
+              </div>
+              <div className="p-3 border border-border bg-background rounded-none">
+                <div className="text-xl font-mono text-emerald-500">{batchDetail?.completed_files ?? 0}</div>
+                <div className="text-[9px] text-muted-foreground uppercase tracking-widest font-light">Completed</div>
+              </div>
+              <div className="p-3 border border-border bg-background rounded-none">
+                <div className="text-xl font-mono text-[#9B8F77]">{batchDetail?.processing_files ?? 0}</div>
+                <div className="text-[9px] text-muted-foreground uppercase tracking-widest font-light">Processing</div>
+              </div>
+              <div className="p-3 border border-border bg-background rounded-none">
+                <div className="text-xl font-mono text-destructive">{batchDetail?.failed_files ?? 0}</div>
+                <div className="text-[9px] text-muted-foreground uppercase tracking-widest font-light">Failed</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Rejected Uploads Banner */}
+          {rejectedUploads.length > 0 && (
+            <div className="p-4 border border-destructive/40 bg-destructive/10 space-y-2 rounded-none">
+              <div className="flex items-center gap-2 text-destructive text-xs font-semibold uppercase tracking-wider">
+                <AlertTriangle className="w-4 h-4" />
+                <span>{rejectedUploads.length} Files Rejected at Ingress</span>
+              </div>
+              <div className="divide-y divide-destructive/20 text-xs text-foreground font-mono">
+                {rejectedUploads.map((rej, i) => (
+                  <div key={i} className="py-1.5 flex justify-between">
+                    <span>{rej.filename}</span>
+                    <span className="text-destructive">{rej.error}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Per-Document Processing Cards */}
+          <div className="p-6 border border-border bg-card space-y-4 rounded-none">
+            <h3 className="font-serif text-lg font-normal text-foreground flex items-center gap-2">
+              <Layers className="w-4 h-4 text-[#9B8F77]" />
+              <span>Document Processing Items ({batchDetail?.documents.length ?? 0})</span>
+            </h3>
+
+            <div className="divide-y divide-border">
+              {(batchDetail?.documents ?? []).map((doc, idx) => (
+                <div key={`${doc.filename}-${idx}`} className="py-3 flex items-center justify-between gap-4">
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="text-xs font-medium text-foreground truncate flex items-center gap-2">
+                      <span>{doc.filename}</span>
+                      {doc.cached && (
+                        <span className="text-[9px] font-mono uppercase tracking-widest px-1.5 py-0.5 border border-border bg-background text-[#9B8F77]">
+                          Cached / Deduplicated
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground font-mono">
+                      {doc.document_id ? `ID: ${doc.document_id.slice(0, 8)}...` : 'Rejected'}
+                    </div>
+                  </div>
+                  <div className="shrink-0">
+                    <StatusBadge status={doc.status} size="sm" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>

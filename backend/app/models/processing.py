@@ -34,6 +34,10 @@ class StepStatus(str, Enum):
 
 class ProcessingJob(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    batch_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("ingestion_batch.id", ondelete="SET NULL"), index=True, nullable=True)
+    )
     total_items: int = Field(default=0, nullable=False)
     completed_items: int = Field(default=0, nullable=False)
     failed_items: int = Field(default=0, nullable=False)

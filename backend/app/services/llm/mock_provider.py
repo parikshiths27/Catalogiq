@@ -174,15 +174,15 @@ class MockProvider(BaseLLMProvider):
         if "upload" in msg_lower or page_ctx == "upload":
             return {
                 "message": (
-                    "To upload a document in CatalogIQ:\n"
+                    "To upload documents in CatalogIQ:\n"
                     "1. Navigate to the **Upload Page** (`/upload`).\n"
-                    "2. Drag and drop your technical catalog PDF (up to 50MB).\n"
-                    "3. Click **Start Ingestion**. CatalogIQ automatically parses, extracts, validates, enriches, and indexes the catalog items."
+                    "2. Drag and drop your technical catalog documents (PDF, DOCX, XLSX, CSV, TXT, JSON, XML, HTML, MD, or ZIP up to 50MB per file).\n"
+                    "3. Click **Start Ingestion**. CatalogIQ automatically parses multi-format files into a common Intermediate Representation (IR), extracts attributes, validates quality, enriches commerce descriptions, and indexes catalog items."
                 ),
                 "suggestions": [
-                    "What happens after parsing?",
-                    "Why is my document still processing?",
-                    "How does extraction work?",
+                    "What file formats are supported?",
+                    "How does batch processing work?",
+                    "If I upload an Excel file, what happens?",
                 ],
             }
 
@@ -203,13 +203,13 @@ class MockProvider(BaseLLMProvider):
 
         return {
             "message": (
-                "CatalogIQ is an AI-powered Product Intelligence platform. "
-                "I can help you understand document processing, extraction, validation quality scores, multi-source reconciliation, and hybrid search."
+                "CatalogIQ is an AI-powered Product Intelligence and Enrichment platform. "
+                "I can help you understand multi-format document processing, batch ingestion, extraction, validation quality scores, product content enrichment, and hybrid search."
             ),
             "suggestions": [
-                "How do I upload a catalog?",
-                "How does search work?",
-                "What does product quality score mean?",
+                "What file formats are supported?",
+                "How does batch processing work?",
+                "What is product enrichment?",
             ],
         }
 

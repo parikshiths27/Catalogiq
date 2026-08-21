@@ -83,46 +83,54 @@ class GeminiProvider(BaseLLMProvider):
     def prompt_version(self) -> str:
         return self._prompt_version
 
-    def _call_gemini(self, user_prompt: str) -> str:
+    def _generate_with_retry(self, prompt: str, config: Any, max_retries: int = 5) -> str:
         """
-        Calls Gemini with system + user messages and returns the raw text response.
-        Retries on transient errors (rate limits, 5xx).
+        Executes Gemini generate_content with automatic exponential backoff for transient errors (429, 503, quotas).
         """
-        full_prompt = f"{EXTRACTION_SYSTEM_PROMPT}\n\n{user_prompt}"
-
-        for attempt in range(1, _MAX_RETRIES + 1):
+        import re
+        for attempt in range(1, max_retries + 1):
             try:
                 response = self._client.models.generate_content(
                     model=self._model,
-                    contents=full_prompt,
-                    config=self._types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1,
-                        max_output_tokens=4096,
-                    ),
+                    contents=prompt,
+                    config=config,
                 )
                 return response.text
             except Exception as e:
                 error_str = str(e).lower()
                 is_transient = any(
                     keyword in error_str
-                    for keyword in ["rate", "quota", "429", "500", "503", "timeout"]
+                    for keyword in ["rate", "quota", "429", "500", "503", "unavailable", "temporarily", "timeout", "resource_exhausted", "retry in"]
                 )
-                if attempt == _MAX_RETRIES:
-                    raise ExtractionError(
-                        f"Gemini extraction failed after {_MAX_RETRIES} attempts: {e}"
-                    ) from e
-                if is_transient:
-                    wait = _RETRY_DELAY_SECONDS * attempt
-                    logger.warning(
-                        f"Gemini transient error (attempt {attempt}/{_MAX_RETRIES}), "
-                        f"retrying in {wait}s: {e}"
-                    )
-                    time.sleep(wait)
+                if attempt == max_retries or not is_transient:
+                    raise
+                retry_match = re.search(r"retry in (\d+(?:\.\d+)?)s", error_str)
+                if retry_match:
+                    wait = float(retry_match.group(1)) + 1.5
                 else:
-                    raise ExtractionError(f"Gemini extraction non-retryable error: {e}") from e
+                    wait = min(30.0, float(_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))))
+                logger.warning(
+                    f"Gemini transient rate/quota error (attempt {attempt}/{max_retries}), "
+                    f"waiting {wait:.1f}s before retry: {e}"
+                )
+                time.sleep(wait)
 
-        raise ExtractionError("Gemini extraction failed: exhausted all retries")
+    def _call_gemini(self, user_prompt: str) -> str:
+        """
+        Calls Gemini with system + user messages and returns the raw text response.
+        Retries on transient errors (rate limits, 5xx).
+        """
+        full_prompt = f"{EXTRACTION_SYSTEM_PROMPT}\n\n{user_prompt}"
+        config = self._types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.1,
+            max_output_tokens=4096,
+        )
+
+        try:
+            return self._generate_with_retry(full_prompt, config)
+        except Exception as e:
+            raise ExtractionError(f"Gemini extraction failed: {e}") from e
 
     def extract(self, ir: Dict[str, Any]) -> ExtractionResult:
         """
@@ -143,18 +151,68 @@ class GeminiProvider(BaseLLMProvider):
         logger.info(f"Sending extraction request to Gemini model: {self._model}")
         raw_content = self._call_gemini(user_prompt)
 
+        import re
+        cleaned_content = raw_content.strip()
+        if cleaned_content.startswith("```"):
+            cleaned_content = re.sub(r"^```(?:json)?\s*", "", cleaned_content)
+            cleaned_content = re.sub(r"\s*```$", "", cleaned_content).strip()
+
         try:
-            raw_dict = json.loads(raw_content)
+            raw_data = json.loads(cleaned_content)
         except json.JSONDecodeError as e:
             raise ExtractionError(
                 f"Gemini returned non-JSON response. Raw: {raw_content[:500]}"
             ) from e
 
+        # Normalize raw_data into a dictionary for ExtractionResult
+        if isinstance(raw_data, list):
+            if len(raw_data) > 0 and isinstance(raw_data[0], dict):
+                first_item = raw_data[0]
+                if "raw_value" in first_item or "specification" in first_item or "attribute" in first_item:
+                    raw_dict = {"attributes": raw_data}
+                else:
+                    raw_dict = dict(first_item)
+                    all_attrs = []
+                    for item in raw_data:
+                        if isinstance(item, dict) and "attributes" in item and isinstance(item["attributes"], list):
+                            all_attrs.extend(item["attributes"])
+                    if all_attrs:
+                        raw_dict["attributes"] = all_attrs
+            else:
+                raw_dict = {}
+        elif isinstance(raw_data, dict):
+            raw_dict = dict(raw_data)
+            for wrapper in ["products", "items", "catalog", "records", "data"]:
+                if wrapper in raw_dict and isinstance(raw_dict[wrapper], list) and len(raw_dict[wrapper]) > 0:
+                    first = raw_dict[wrapper][0]
+                    if isinstance(first, dict):
+                        for k, v in first.items():
+                            if k not in raw_dict or not raw_dict[k]:
+                                raw_dict[k] = v
+                    break
+        else:
+            raw_dict = {}
+
+        # Handle aliases from industrial datasets
+        if "Mfg_Part_Num" in raw_dict and ("sku" not in raw_dict or not raw_dict["sku"]):
+            raw_dict["sku"] = str(raw_dict["Mfg_Part_Num"])
+        if "Part_Desc" in raw_dict:
+            if "product_name" not in raw_dict or not raw_dict["product_name"]:
+                raw_dict["product_name"] = str(raw_dict["Part_Desc"])
+            if "description" not in raw_dict or not raw_dict["description"]:
+                raw_dict["description"] = str(raw_dict["Part_Desc"])
+        if "Unilog_Brand" in raw_dict or "E1_Brand" in raw_dict or "Part_Manuf" in raw_dict:
+            if "brand" not in raw_dict or not raw_dict["brand"]:
+                brand_val = raw_dict.get("Unilog_Brand") or raw_dict.get("E1_Brand") or raw_dict.get("Part_Manuf")
+                if brand_val:
+                    raw_dict["brand"] = str(brand_val)
+
         try:
             result = ExtractionResult(**raw_dict)
         except Exception as e:
+            raw_keys = list(raw_dict.keys()) if isinstance(raw_dict, dict) else str(type(raw_dict))
             raise ExtractionError(
-                f"Gemini response failed Pydantic validation: {e}. Raw dict keys: {list(raw_dict.keys())}"
+                f"Gemini response failed Pydantic validation: {e}. Raw dict keys: {raw_keys}"
             ) from e
 
         # Stamp provider metadata
@@ -183,23 +241,30 @@ class GeminiProvider(BaseLLMProvider):
 
         logger.info(f"Sending enrichment request to Gemini model: {self._model}")
         
+        config = self._types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.2,
+            max_output_tokens=4096,
+        )
+
         try:
-            response = self._client.models.generate_content(
-                model=self._model,
-                contents=full_prompt,
-                config=self._types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.2,
-                    max_output_tokens=4096,
-                ),
-            )
-            raw_content = response.text
+            raw_content = self._generate_with_retry(full_prompt, config)
         except Exception as e:
             raise EnrichmentError(f"Gemini enrichment call failed: {e}") from e
 
+        import re
+        cleaned_content = raw_content.strip()
+        if cleaned_content.startswith("```"):
+            cleaned_content = re.sub(r"^```(?:json)?\s*", "", cleaned_content)
+            cleaned_content = re.sub(r"\s*```$", "", cleaned_content).strip()
+
         try:
-            raw_dict = json.loads(raw_content)
-            enrichment = CommerceEnrichment(**raw_dict)
+            raw_data = json.loads(cleaned_content)
+            if isinstance(raw_data, list) and len(raw_data) > 0 and isinstance(raw_data[0], dict):
+                raw_data = raw_data[0]
+            elif not isinstance(raw_data, dict):
+                raw_data = {}
+            enrichment = CommerceEnrichment(**raw_data)
             enrichment.provider_name = self.provider_name
             enrichment.model_name = self.model_name
             enrichment.prompt_version = ENRICHMENT_PROMPT_VERSION
@@ -227,40 +292,37 @@ class GeminiProvider(BaseLLMProvider):
         logger.info(f"Sending low-latency assistant request to Gemini model: {self._model}")
 
         try:
-            try:
-                assistant_config = self._types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.2,
-                    max_output_tokens=768,
-                    thinking_config=self._types.ThinkingConfig(
-                        thinking_level="minimal"
-                    ),
-                )
-                response = self._client.models.generate_content(
-                    model=self._model,
-                    contents=full_prompt,
-                    config=assistant_config,
-                )
-            except Exception as think_err:
-                logger.warning(f"ThinkingConfig minimal failed ({think_err}); falling back to standard low-latency config.")
-                assistant_config = self._types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.2,
-                    max_output_tokens=768,
-                )
-                response = self._client.models.generate_content(
-                    model=self._model,
-                    contents=full_prompt,
-                    config=assistant_config,
-                )
-            raw_content = response.text
+            thinking_cfg = None
+            if hasattr(self._types, "ThinkingConfig"):
+                thinking_cfg = self._types.ThinkingConfig(thinking_budget=0)
+
+            assistant_config = self._types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2,
+                max_output_tokens=768,
+                thinking_config=thinking_cfg,
+            )
+            raw_content = self._generate_with_retry(full_prompt, assistant_config)
         except Exception as e:
             logger.error(f"Gemini assistant call failure: {e}")
             raise RuntimeError(f"Gemini assistant call failed: {e}") from e
 
         try:
-            raw_dict = json.loads(raw_content)
-            res_msg = str(raw_dict.get("message") or "")
+            cleaned_json = raw_content.strip()
+            if cleaned_json.startswith("```"):
+                cleaned_json = re.sub(r"^```(?:json)?\s*", "", cleaned_json)
+                cleaned_json = re.sub(r"\s*```$", "", cleaned_json)
+            raw_dict = json.loads(cleaned_json)
+            res_msg = str(
+                raw_dict.get("message")
+                or raw_dict.get("reply")
+                or raw_dict.get("response")
+                or raw_dict.get("answer")
+                or raw_dict.get("text")
+                or ""
+            ).strip()
+            if not res_msg:
+                res_msg = raw_content
             res_sug = raw_dict.get("suggestions") or []
             if not isinstance(res_sug, list):
                 res_sug = []
@@ -271,7 +333,7 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as e:
             logger.warning(f"Failed to parse JSON assistant output from Gemini, returning fallback text: {e}")
             return {
-                "message": raw_content,
+                "message": raw_content.strip(),
                 "suggestions": [
                     "How do I upload a catalog?",
                     "How does search work?",

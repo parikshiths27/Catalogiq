@@ -12,6 +12,8 @@ from app.models import (
     ProductStatus,
     Document,
     DocumentStatus,
+    IngestionBatch,
+    BatchStatus,
     ProcessingJob,
     JobStatus,
     ProcessingStep,
@@ -108,6 +110,18 @@ def get_overview_summary(session: Session = Depends(get_session)) -> OverviewSum
     documents_processed = session.exec(
         select(func.count()).select_from(Document).where(Document.status == DocumentStatus.processed)
     ).one() or 0
+
+    # Also count completed IngestionBatches if no documents are recorded as processed
+    # (e.g., when ingestion was done via the tabular pipeline which may mark batch but not doc)
+    completed_batches = session.exec(
+        select(func.count()).select_from(IngestionBatch).where(
+            IngestionBatch.status.in_([BatchStatus.completed, BatchStatus.partially_completed])
+        )
+    ).one() or 0
+
+    # Use the higher of doc-based count vs batch-based count as the authoritative "Sources Processed" metric
+    sources_processed = max(documents_processed, completed_batches)
+    total_sources = max(total_documents, session.exec(select(func.count()).select_from(IngestionBatch)).one() or 0)
 
     active_jobs = session.exec(
         select(func.count()).select_from(ProcessingJob).where(
@@ -218,8 +232,8 @@ def get_overview_summary(session: Session = Depends(get_session)) -> OverviewSum
     return OverviewSummaryResponse(
         kpis=OverviewKpisSchema(
             total_products=total_products,
-            documents_processed=documents_processed,
-            total_documents=total_documents,
+            documents_processed=sources_processed,
+            total_documents=total_sources,
             active_processing_jobs=active_jobs,
             review_backlog=review_backlog,
             catalog_quality_score=catalog_quality_score,

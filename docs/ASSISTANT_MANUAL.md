@@ -5,32 +5,48 @@ This document is the authoritative, grounded user manual for CatalogIQ — an AI
 ---
 
 ## 1. What is CatalogIQ?
-CatalogIQ is an enterprise product intelligence platform designed to ingest raw, unstructured technical product catalogs (PDFs, spec sheets, data sheets), extract structured engineering attributes with evidence traceability, validate data completeness and quality, reconcile multi-source data conflicts, generate AI commerce descriptions, and provide high-precision hybrid search and faceted filtering.
+CatalogIQ is an enterprise product intelligence and catalog content enrichment platform designed to ingest multi-format technical catalogs (PDF, DOCX, XLSX, CSV, TXT, JSON, XML, HTML, Markdown), extract structured engineering attributes with evidence traceability, validate data completeness and quality, reconcile multi-source data conflicts, generate AI commerce descriptions, and provide high-precision hybrid search and faceted filtering.
 
 ---
 
-## 2. Uploading Documents
-- Users upload technical PDFs or product catalog documents via the **Upload Page** (`/upload`).
-- Ingestion accepts PDF files up to 50MB.
-- Upon upload, a unique `document_id` and an initial background `ProcessingJob` are created with `queued` status.
+## 2. Uploading Documents & Batches
+- Users upload individual documents, multi-file batches, folder selections, or ZIP archives via the **Upload Page** (`/upload`).
+- Ingestion supports:
+  - **PDF** (`.pdf`): High-precision layout and visual table parsing.
+  - **DOCX** (`.docx`): Word document structure parsing.
+  - **XLSX** (`.xlsx`): Multi-sheet Excel workbook and spreadsheet tabular parsing.
+  - **CSV** (`.csv`): Tabular record parsing.
+  - **TXT** (`.txt`) & **MD** (`.md`): Paginated text and markdown parsing.
+  - **JSON** (`.json`): Structured attribute and node parsing.
+  - **XML** (`.xml`): Hierarchical entity parsing.
+  - **HTML / HTM** (`.html`, `.htm`): Web catalog and table DOM parsing.
+  - **ZIP Archives** (`.zip`): Unpacked safely with security checks (zip-bomb and path-traversal protection) to ingest all contained supported formats.
+- Single file upload creates a single `Document` and `ProcessingJob`.
+- Multi-file or ZIP batch upload creates an `IngestionBatch` with individual `IngestionBatchItem` records. Each valid file is processed independently with live aggregated progress tracking.
+- Content Deduplication: When a file with a matching SHA-256 hash is uploaded again, CatalogIQ marks it `cached=True` and associates it with the batch without running redundant Celery workloads.
 
 ---
 
 ## 3. Document Processing
 Processing occurs asynchronously in sequential stages:
-1. **Ingestion & Validation**: File type, size, and checksum verification.
-2. **Parsing**: Layout analysis and structural extraction into Intermediate Representation (IR).
-3. **Extraction**: LLM and deterministic extraction of product metadata and technical attributes.
-4. **Validation & Quality Scoring**: Completeness, unit normalization, confidence scoring, and issue detection.
-5. **Enrichment**: Generation of commerce descriptions, feature bullet points, and SEO content.
-6. **Indexing**: Vector embedding creation and Qdrant + PostgreSQL payload synchronization.
+1. **Ingestion & Validation**: Format verification, security inspection, magic byte checks, and checksum calculation.
+2. **Parsing**: MultiFormatParser routes files to specialized parsers (DoclingParser, ExcelParser, CSVParser, TextParser, JSONParser, XMLParser, HTMLParser) to construct a unified Intermediate Representation (IR).
+3. **Extraction**: Deterministic table extraction and LLM semantic extraction (via Google Gemini) of product metadata and technical attributes.
+4. **Validation & Quality Scoring**: Completeness evaluation, canonical unit conversions, LOV validation, confidence calculation, and issue detection.
+5. **Commerce Enrichment**: Brand/manufacturer canonicalization, taxonomy classification, and generation of commerce summaries, feature bullets, and applications.
+6. **Indexing**: Vector embedding generation in Qdrant and lexical indexing in PostgreSQL.
 
 ---
 
-## 4. Parsing (Docling IR)
-- CatalogIQ uses Docling parser (or fallback parser) to convert raw PDFs into a structured Intermediate Representation (IR).
-- IR contains structured tables, page text blocks, section headers, and bounding metadata.
-- Preserves exact page numbers and original text snippets for evidence traceability.
+## 4. Parsing (MultiFormatParser & Common IR)
+- CatalogIQ uses `MultiFormatParser` to dispatch incoming documents to specialized parsers:
+  - `DoclingParser` for PDF and DOCX documents.
+  - `ExcelParser` for `.xlsx` workbooks.
+  - `CSVParser` for comma-separated values.
+  - `TextParser` for plain text and markdown.
+  - `JSONParser` and `XMLParser` for structured data.
+  - `HTMLParser` for clean DOM table and content extraction.
+- All parsers convert disparate sources into a common Intermediate Representation (IR) containing page structures, extracted tables, and layout text, preserving evidence citations for downstream stages.
 
 ---
 

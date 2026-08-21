@@ -32,6 +32,10 @@ class Document(SQLModel, table=True):
     mime_type: str = Field(nullable=False)
     file_size: int = Field(nullable=False)
     page_count: Optional[int] = Field(default=None, nullable=True)
+    batch_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("ingestion_batch.id", ondelete="SET NULL"), index=True, nullable=True)
+    )
     status: DocumentStatus = Field(default=DocumentStatus.uploaded, sa_column=Column(sa.String, nullable=False))
     parser_name: Optional[str] = Field(default=None, nullable=True)
     parser_version: Optional[str] = Field(default=None, nullable=True)

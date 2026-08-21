@@ -1,7 +1,7 @@
 import uuid
 import json
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Form
 from sqlmodel import Session
 from pydantic import BaseModel
 
@@ -17,6 +17,7 @@ router = APIRouter(prefix="/documents")
 class UploadResponse(BaseModel):
     document_id: uuid.UUID
     job_id: Optional[uuid.UUID]
+    batch_id: Optional[uuid.UUID] = None
     status: str
     cached: bool
 
@@ -25,6 +26,53 @@ class ReprocessResponse(BaseModel):
     job_id: uuid.UUID
     status: str
     reprocessed: bool
+
+class BatchDocumentResult(BaseModel):
+    filename: str
+    document_id: uuid.UUID
+    job_id: Optional[uuid.UUID]
+    status: str
+    cached: bool
+
+class BatchRejectedResult(BaseModel):
+    filename: str
+    error: str
+
+class BatchUploadResponse(BaseModel):
+    batch_id: uuid.UUID
+    batch_name: Optional[str]
+    status: str
+    total_files: int
+    accepted_count: int
+    rejected_count: int
+    documents: List[BatchDocumentResult]
+    rejected: List[BatchRejectedResult]
+
+class BatchDocumentStatusResponse(BaseModel):
+    document_id: Optional[uuid.UUID] = None
+    filename: str
+    status: str
+    job_id: Optional[uuid.UUID] = None
+    mime_type: Optional[str] = None
+    file_size: Optional[int] = None
+    cached: Optional[bool] = False
+    error_message: Optional[str] = None
+    updated_at: Optional[Any] = None
+
+class BatchDetailResponse(BaseModel):
+    batch_id: uuid.UUID
+    name: Optional[str]
+    status: str
+    total_files: int
+    processed_files: int
+    completed_files: int
+    failed_files: int
+    processing_files: int
+    progress_percentage: float
+    created_at: Any
+    updated_at: Any
+    completed_at: Optional[Any]
+    documents: List[BatchDocumentStatusResponse]
 
 @router.get("/", response_model=List[Document])
 def list_documents(
@@ -35,6 +83,44 @@ def list_documents(
 ):
     repo = DocumentRepository(session)
     return repo.list_documents(limit=limit, offset=offset, status=status)
+
+@router.delete("/clear-all")
+def clear_all_documents(session: Session = Depends(get_session)):
+    """
+    Clears all documents and their associated processing jobs/steps from the database.
+    Does NOT delete the products that were created from those documents.
+    """
+    from sqlmodel import select as sel
+    from app.models import ProcessingStep, ProcessingJob, IngestionBatch
+
+    # Delete processing steps first (FK dependency)
+    steps = session.exec(sel(ProcessingStep)).all()
+    for s in steps:
+        session.delete(s)
+
+    # Delete processing jobs
+    jobs = session.exec(sel(ProcessingJob)).all()
+    for j in jobs:
+        session.delete(j)
+
+    # Delete documents
+    docs = session.exec(sel(Document)).all()
+    doc_count = len(docs)
+    for d in docs:
+        session.delete(d)
+
+    # Delete ingestion batches
+    batches = session.exec(sel(IngestionBatch)).all()
+    for b in batches:
+        session.delete(b)
+
+    session.commit()
+
+    return {
+        "status": "cleared",
+        "documents_removed": doc_count,
+        "message": f"Successfully cleared {doc_count} documents and all associated processing records.",
+    }
 
 @router.get("/{document_id}", response_model=Document)
 def get_document(document_id: uuid.UUID, session: Session = Depends(get_session)):
@@ -58,11 +144,12 @@ def upload_document(
         res = service.upload_document(
             file_content=file_content,
             filename=file.filename,
-            mime_type=file.content_type or "application/pdf"
+            mime_type=file.content_type or "application/octet-stream"
         )
         return UploadResponse(
             document_id=res["document_id"],
             job_id=res.get("job_id"),
+            batch_id=res.get("batch_id"),
             status=res["status"],
             cached=res.get("cached", False)
         )
@@ -164,4 +251,82 @@ def get_extracted_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load extraction results: {str(e)}"
+        )
+
+@router.post("/upload-batch", response_model=BatchUploadResponse, status_code=status.HTTP_201_CREATED)
+def upload_batch(
+    files: Optional[List[UploadFile]] = File(None),
+    zip_file: Optional[UploadFile] = File(None),
+    batch_name: Optional[str] = Form(None),
+    session: Session = Depends(get_session)
+):
+    from app.services.batch import BatchService
+    service = BatchService(session)
+    try:
+        if zip_file:
+            zip_bytes = zip_file.file.read()
+            res = service.create_batch_from_zip(zip_bytes, zip_file.filename)
+        elif files:
+            file_tuples = []
+            for f in files:
+                content = f.file.read()
+                file_tuples.append((f.filename, content, f.content_type or "application/octet-stream"))
+            res = service.create_batch_from_files(file_tuples, batch_name=batch_name)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either 'files' (multi-file) or 'zip_file' must be provided."
+            )
+        return BatchUploadResponse(**res)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Batch upload failed: {str(e)}"
+        )
+
+@router.get("/batches/list", response_model=List[BatchDetailResponse])
+@router.get("/batches", response_model=List[BatchDetailResponse])
+def list_batches(
+    limit: int = 100,
+    offset: int = 0,
+    status: Optional[str] = None,
+    session: Session = Depends(get_session)
+):
+    from app.services.batch import BatchService
+    from app.models import IngestionBatch
+    from sqlmodel import select
+
+    stmt = select(IngestionBatch)
+    if status:
+        stmt = stmt.where(IngestionBatch.status == status)
+    stmt = stmt.order_by(IngestionBatch.created_at.desc()).offset(offset).limit(limit)
+    batches = session.exec(stmt).all()
+
+    service = BatchService(session)
+    return [BatchDetailResponse(**service.get_batch_status(b.id)) for b in batches]
+
+@router.get("/batches/{batch_id}", response_model=BatchDetailResponse)
+def get_batch(
+    batch_id: uuid.UUID,
+    session: Session = Depends(get_session)
+):
+    from app.services.batch import BatchService
+    service = BatchService(session)
+    try:
+        res = service.get_batch_status(batch_id)
+        return BatchDetailResponse(**res)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve batch status: {str(e)}"
         )

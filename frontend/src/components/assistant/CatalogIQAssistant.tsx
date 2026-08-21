@@ -24,7 +24,7 @@ export const CatalogIQAssistant: React.FC = () => {
     if (path.startsWith('/upload')) return { page: 'upload' };
     if (path.startsWith('/jobs')) return { page: 'jobs' };
     if (path.startsWith('/products/')) return { page: 'product_detail', product_id: path.split('/')[2] };
-    if (path.startsWith('/products')) return { page: 'products' };
+    if (path.startsWith('/products') || path.startsWith('/catalog')) return { page: 'products' };
     if (path.startsWith('/reviews')) return { page: 'reviews' };
     if (path.startsWith('/health')) return { page: 'health' };
     return { page: 'dashboard' };
@@ -35,36 +35,31 @@ export const CatalogIQAssistant: React.FC = () => {
     const ctx = getPageContext();
     if (ctx.page === 'upload') {
       return [
-        'How do I upload a product catalog?',
-        'What happens after document parsing?',
-        'Why is my document still processing?',
+        'If I upload an Excel file, what happens?',
+        'What file formats are supported?',
+        'How does batch processing work?',
+        'Can I upload a ZIP archive?',
       ];
     }
     if (ctx.page === 'search') {
       return [
+        'How does hybrid search work?',
         'What is the difference between semantic and keyword search?',
-        'What does the relevance score mean?',
-        'How does hybrid search rank exact SKU matches?',
+        'How does exact SKU match boost ranking?',
       ];
     }
     if (ctx.page === 'reviews') {
       return [
+        'What does needs_review mean?',
         'Why does a product need review?',
         'How do I resolve multi-source conflicts?',
-        'What is evidence verification?',
-      ];
-    }
-    if (ctx.page === 'product_detail') {
-      return [
-        'How is the quality score calculated?',
-        'What is the evidence for attributes?',
-        'How does commerce enrichment work?',
       ];
     }
     return [
-      'How does CatalogIQ work?',
-      'How do I upload a technical catalog?',
-      'What does product quality score mean?',
+      'What file formats are supported?',
+      'If I upload an Excel file, what happens?',
+      'How does batch processing work?',
+      'What does needs_review mean?',
     ];
   };
 
@@ -103,20 +98,23 @@ export const CatalogIQAssistant: React.FC = () => {
       });
 
       if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.detail || `Assistant request failed (${response.status})`);
+        throw new Error(`Assistant query failed with HTTP ${response.status}`);
       }
 
       const data = await response.json();
       const assistantTurn: ChatTurn = {
         role: 'assistant',
-        content: data.message || 'CatalogIQ Assistant response received.',
+        content:
+          data.message ||
+          data.reply ||
+          (data.detail ? `Assistant Notice: ${data.detail}` : 'CatalogIQ Assistant is ready to help.'),
         suggestions: data.suggestions || [],
       };
+
       setMessages((prev) => [...prev, assistantTurn]);
     } catch (err: any) {
-      console.error('Assistant API error:', err);
-      setError('CatalogIQ Assistant is temporarily unavailable. You can continue using CatalogIQ normally.');
+      console.error('Assistant error:', err);
+      setError(err?.message || 'Failed to connect to CatalogIQ Assistant');
     } finally {
       setLoading(false);
     }
@@ -129,58 +127,59 @@ export const CatalogIQAssistant: React.FC = () => {
     }
   };
 
-  const currentSuggestions =
-    messages.length > 0 && messages[messages.length - 1].role === 'assistant'
-      ? messages[messages.length - 1].suggestions || []
-      : getInitialSuggestions();
+  // Get active suggestions
+  const lastAssistantTurn = [...messages].reverse().find((m) => m.role === 'assistant');
+  const currentSuggestions = lastAssistantTurn?.suggestions && lastAssistantTurn.suggestions.length > 0
+    ? lastAssistantTurn.suggestions
+    : (messages.length === 0 ? getInitialSuggestions() : []);
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end">
-      {/* Floating Toggle Button */}
+    <div className="fixed bottom-6 right-6 z-50 select-none">
+      {/* Assistant Floating Button */}
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="bg-indigo-600 hover:bg-indigo-500 text-white p-3.5 rounded-full shadow-2xl transition-all transform hover:scale-105 flex items-center gap-2 border border-indigo-400/30 group"
-          title="CatalogIQ Assistant / Help Center"
+          className="h-11 px-4 border border-foreground bg-foreground text-background hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none shadow-xl flex items-center gap-2"
+          title="Open CatalogIQ Assistant"
         >
-          <Sparkles className="w-5 h-5 text-amber-300 animate-pulse" />
-          <span className="text-xs font-semibold pr-1 hidden sm:inline">CatalogIQ Assistant</span>
+          <Sparkles className="w-4 h-4 text-[#9B8F77]" />
+          <span className="hidden sm:inline">CatalogIQ Assistant</span>
         </button>
       )}
 
       {/* Assistant Chat Panel */}
       {isOpen && (
-        <div className="bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl w-full max-w-sm sm:max-w-md h-[520px] flex flex-col overflow-hidden text-slate-100 animate-in fade-in slide-in-from-bottom-5 duration-200">
+        <div className="bg-card border border-border rounded-none shadow-2xl w-full max-w-sm sm:max-w-md h-[520px] flex flex-col overflow-hidden text-foreground">
           {/* Header */}
-          <div className="bg-slate-950 border-b border-slate-800 px-4 py-3 flex items-center justify-between">
+          <div className="bg-background border-b border-border px-4 py-3 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="p-1.5 bg-indigo-950/80 border border-indigo-700/50 rounded-lg text-indigo-400">
-                <Sparkles className="w-4 h-4 text-amber-400" />
+              <div className="p-1.5 border border-border bg-card text-[#9B8F77] rounded-none">
+                <Sparkles className="w-4 h-4" />
               </div>
               <div>
-                <h4 className="text-sm font-bold text-white leading-tight">CatalogIQ Assistant</h4>
-                <p className="text-[11px] text-slate-400">In-Product Help & Documentation</p>
+                <h4 className="text-base font-serif font-normal text-foreground leading-tight">CatalogIQ Assistant</h4>
+                <p className="text-[9px] uppercase tracking-widest text-muted-foreground font-light">In-Product Intelligence</p>
               </div>
             </div>
             <button
               onClick={() => setIsOpen(false)}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition"
+              className="p-1.5 text-muted-foreground hover:text-foreground transition"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
           {/* Messages Scroll Body */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs font-light">
             {/* Welcome Greeting */}
             {messages.length === 0 && (
-              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2">
-                <div className="flex items-center gap-2 text-indigo-400 font-semibold text-xs">
-                  <MessageSquare className="w-4 h-4" />
-                  <span>Welcome to CatalogIQ Help</span>
+              <div className="border border-border bg-background p-4 space-y-2 rounded-none">
+                <div className="flex items-center gap-2 text-[#9B8F77] font-medium text-xs">
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span className="uppercase tracking-widest text-[10px]">Welcome to CatalogIQ Assistant</span>
                 </div>
-                <p className="text-slate-300 text-xs leading-relaxed">
-                  Hi! I'm your CatalogIQ Assistant. Ask me anything about document parsing, attribute extraction, confidence scoring, quality validation, multi-source reconciliation, or hybrid search.
+                <p className="text-muted-foreground text-xs leading-relaxed font-light">
+                  Ask me anything about multi-format document parsing, attribute extraction, confidence scoring, quality validation, multi-source reconciliation, or hybrid search.
                 </p>
               </div>
             )}
@@ -192,10 +191,10 @@ export const CatalogIQAssistant: React.FC = () => {
                 className={`flex flex-col ${turn.role === 'user' ? 'items-end' : 'items-start'}`}
               >
                 <div
-                  className={`max-w-[88%] rounded-xl px-3.5 py-2.5 leading-relaxed text-xs ${
+                  className={`max-w-[88%] p-3 leading-relaxed text-xs rounded-none ${
                     turn.role === 'user'
-                      ? 'bg-indigo-600 text-white rounded-br-none shadow'
-                      : 'bg-slate-950 border border-slate-800 text-slate-200 rounded-bl-none shadow-inner whitespace-pre-wrap'
+                      ? 'bg-foreground text-background font-medium'
+                      : 'bg-background border border-border text-foreground font-light whitespace-pre-wrap'
                   }`}
                 >
                   {turn.content}
@@ -205,22 +204,22 @@ export const CatalogIQAssistant: React.FC = () => {
 
             {/* Loading Indicator */}
             {loading && (
-              <div className="flex items-center gap-2 text-slate-400 text-xs bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/50 w-fit">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-                <span>Consulting CatalogIQ knowledge...</span>
+              <div className="flex items-center gap-2 text-muted-foreground text-xs bg-background p-2.5 border border-border w-fit rounded-none font-mono">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#9B8F77]" />
+                <span>Consulting knowledge base...</span>
               </div>
             )}
 
-            {/* Error Message & Retry */}
+            {/* Error Message */}
             {error && (
-              <div className="bg-red-950/50 border border-red-800/80 rounded-xl p-3 text-red-300 flex items-start justify-between gap-2">
+              <div className="border border-destructive/40 bg-destructive/10 p-3 text-destructive flex items-start justify-between gap-2 rounded-none">
                 <div className="flex items-start gap-2 text-xs">
-                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>{error}</span>
                 </div>
                 <button
                   onClick={() => handleSendMessage()}
-                  className="text-xs bg-red-900/60 hover:bg-red-800 px-2 py-1 rounded text-white transition flex items-center gap-1 shrink-0"
+                  className="text-xs bg-destructive text-destructive-foreground px-2 py-1 transition flex items-center gap-1 shrink-0 rounded-none uppercase font-mono"
                 >
                   <RefreshCw className="w-3 h-3" /> Retry
                 </button>
@@ -230,13 +229,13 @@ export const CatalogIQAssistant: React.FC = () => {
             {/* Contextual Suggested Questions Chips */}
             {!loading && currentSuggestions.length > 0 && (
               <div className="pt-2 space-y-1.5">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Suggested Questions:</span>
+                <span className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">Suggested Questions:</span>
                 <div className="flex flex-wrap gap-1.5">
                   {currentSuggestions.map((sug, i) => (
                     <button
                       key={i}
                       onClick={() => handleSendMessage(sug)}
-                      className="bg-slate-950 hover:bg-indigo-950 border border-slate-800 hover:border-indigo-700 text-indigo-300 hover:text-indigo-200 text-[11px] px-2.5 py-1 rounded-lg transition text-left leading-tight"
+                      className="bg-background hover:bg-accent border border-border text-muted-foreground hover:text-foreground text-[10px] px-2.5 py-1 transition text-left leading-tight rounded-none"
                     >
                       {sug}
                     </button>
@@ -249,20 +248,20 @@ export const CatalogIQAssistant: React.FC = () => {
           </div>
 
           {/* Footer Input Bar */}
-          <div className="bg-slate-950 border-t border-slate-800 p-3">
+          <div className="bg-background border-t border-border p-3">
             <div className="flex items-center gap-2">
               <input
                 type="text"
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask about CatalogIQ features, stages, or errors..."
-                className="flex-1 bg-slate-900 border border-slate-700/80 text-white rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                placeholder="Ask about CatalogIQ features or specifications..."
+                className="flex-1 bg-card border border-border text-foreground px-3 py-2 text-xs focus:outline-none focus:border-foreground rounded-none font-light"
               />
               <button
                 onClick={() => handleSendMessage()}
                 disabled={loading || !inputMessage.trim()}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+                className="h-8 px-3 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground transition disabled:opacity-40 disabled:cursor-not-allowed rounded-none"
                 title="Send Message"
               >
                 <Send className="w-3.5 h-3.5" />

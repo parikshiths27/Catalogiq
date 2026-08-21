@@ -12,6 +12,7 @@ from app.api.v1.search import router as search_router
 from app.api.v1.overview import router as overview_router
 from app.api.v1.reviews import router as reviews_router
 from app.api.v1.assistant import router as assistant_router
+from app.api.v1.enrich import router as enrich_router
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -39,6 +40,7 @@ app.include_router(search_router, prefix="/api/v1", tags=["Search"])
 app.include_router(overview_router, prefix="/api/v1", tags=["Overview"])
 app.include_router(reviews_router, prefix="/api/v1", tags=["Reviews"])
 app.include_router(assistant_router, prefix="/api/v1", tags=["Assistant"])
+app.include_router(enrich_router, prefix="/api/v1", tags=["Enrichment"])
 
 @app.get("/")
 def read_root():

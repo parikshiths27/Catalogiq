@@ -131,19 +131,27 @@ class OllamaProvider(BaseLLMProvider):
         raw_content = self._call_ollama(messages)
 
         try:
-            raw_dict = json.loads(raw_content)
+            raw_data = json.loads(raw_content)
         except json.JSONDecodeError as e:
             raise ExtractionError(
                 f"Ollama returned non-JSON response. Raw: {raw_content[:500]}"
             ) from e
 
-        logger.debug(f"Ollama raw response dict keys: {list(raw_dict.keys())}")
+        if isinstance(raw_data, list):
+            raw_dict = raw_data[0] if raw_data and isinstance(raw_data[0], dict) else {}
+        elif isinstance(raw_data, dict):
+            raw_dict = raw_data
+        else:
+            raw_dict = {}
+
+        raw_keys = list(raw_dict.keys()) if isinstance(raw_dict, dict) else str(type(raw_dict))
+        logger.debug(f"Ollama raw response dict keys: {raw_keys}")
 
         try:
             result = ExtractionResult(**raw_dict)
         except Exception as e:
             raise ExtractionError(
-                f"Ollama response failed Pydantic validation: {e}. Raw dict keys: {list(raw_dict.keys())}"
+                f"Ollama response failed Pydantic validation: {e}. Raw dict keys: {raw_keys}"
             ) from e
 
         # Stamp provider metadata
@@ -261,9 +269,23 @@ class OllamaProvider(BaseLLMProvider):
                 resp = client.post(url, json=payload)
                 resp.raise_for_status()
                 raw = resp.json()["message"]["content"]
-                d = json.loads(raw)
+                cleaned_json = raw.strip()
+                if cleaned_json.startswith("```"):
+                    cleaned_json = re.sub(r"^```(?:json)?\s*", "", cleaned_json)
+                    cleaned_json = re.sub(r"\s*```$", "", cleaned_json)
+                d = json.loads(cleaned_json)
+                res_msg = str(
+                    d.get("message")
+                    or d.get("reply")
+                    or d.get("response")
+                    or d.get("answer")
+                    or d.get("text")
+                    or ""
+                ).strip()
+                if not res_msg:
+                    res_msg = raw
                 return {
-                    "message": str(d.get("message") or ""),
+                    "message": res_msg,
                     "suggestions": [str(s) for s in (d.get("suggestions") or []) if isinstance(s, (str, int, float))],
                 }
         except Exception as e:
@@ -271,12 +293,12 @@ class OllamaProvider(BaseLLMProvider):
             return {
                 "message": (
                     "CatalogIQ Assistant is available to help you navigate document parsing, "
-                    "attribute extraction, confidence scoring, quality validation, and hybrid search."
+                    "attribute extraction, confidence scoring, quality validation, multi-source reconciliation, and hybrid search."
                 ),
                 "suggestions": [
-                    "How do I upload a catalog?",
-                    "How does search work?",
-                    "What does product quality score mean?",
+                    "What file formats does CatalogIQ support?",
+                    "How does batch processing work?",
+                    "What happens when I upload Excel?",
                 ],
             }
 

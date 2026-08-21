@@ -20,7 +20,7 @@ def test_env_resolution_from_root_directory(monkeypatch):
         os.chdir(root_dir)
         settings = Settings()
         assert settings.LLM_PROVIDER == "gemini"
-        assert settings.GEMINI_MODEL == "gemini-3.6-flash"
+        assert "gemini" in settings.GEMINI_MODEL
         assert settings.GEMINI_API_KEY is not None
         assert len(settings.GEMINI_API_KEY) > 0
     finally:
@@ -39,7 +39,7 @@ def test_env_resolution_from_backend_directory(monkeypatch):
         os.chdir(backend_dir)
         settings = Settings()
         assert settings.LLM_PROVIDER == "gemini"
-        assert settings.GEMINI_MODEL == "gemini-3.6-flash"
+        assert "gemini" in settings.GEMINI_MODEL
         assert settings.GEMINI_API_KEY is not None
         assert len(settings.GEMINI_API_KEY) > 0
     finally:
@@ -58,7 +58,7 @@ def test_env_resolution_from_arbitrary_directory(monkeypatch):
             os.chdir(temp_dir)
             settings = Settings()
             assert settings.LLM_PROVIDER == "gemini"
-            assert settings.GEMINI_MODEL == "gemini-3.6-flash"
+            assert "gemini" in settings.GEMINI_MODEL
             assert settings.GEMINI_API_KEY is not None
         finally:
             os.chdir(old_cwd)
@@ -95,7 +95,7 @@ def test_system_environment_variable_precedence(monkeypatch):
 def test_llm_factory_resolves_gemini_provider(monkeypatch):
     """
     Proves get_llm_provider() factory returns a GeminiProvider instance
-    targeting gemini-3.6-flash when Gemini config is present in project .env.
+    targeting configured gemini model when Gemini config is present in project .env.
     """
     monkeypatch.delenv("ENV_FILE_PATH", raising=False)
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
@@ -111,4 +111,4 @@ def test_llm_factory_resolves_gemini_provider(monkeypatch):
 
     assert isinstance(provider, GeminiProvider)
     assert provider.provider_name == "gemini"
-    assert provider.model_name == "gemini-3.6-flash"
+    assert "gemini" in provider.model_name

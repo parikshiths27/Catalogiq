@@ -1,9 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Database, AlertTriangle, FileText, CheckCircle2 } from 'lucide-react';
+import { useSearchParams, Link } from 'react-router-dom';
+import {
+  Database,
+  Search,
+  Layers,
+  Sparkles,
+  FileText,
+  ShieldCheck,
+  ArrowLeft,
+  ChevronRight,
+  Download,
+  AlertTriangle,
+  ArrowRight
+} from 'lucide-react';
+import { StatusBadge } from '../../components/ui/StatusBadge';
+import { ConfidenceBadge } from '../../components/ui/ConfidenceBadge';
+import { EnrichmentStepper } from '../../components/ui/EnrichmentStepper';
+import { EnrichmentPanel } from './EnrichmentPanel';
 import { ValidationPanel } from './ValidationPanel';
 import { MultiSourceReconciliationPanel } from './MultiSourceReconciliationPanel';
-import { EnrichmentPanel } from './EnrichmentPanel';
+import { formatAttrValueAndUnit } from '../../lib/formatters';
 
 interface ProductItem {
   id: string;
@@ -26,6 +42,7 @@ interface ProductAttributeItem {
   attribute_name: string;
   display_name: string;
   raw_value: string;
+  normalized_value?: any;
   unit?: string;
   confidence: number;
   status: string;
@@ -40,30 +57,31 @@ interface EvidenceItem {
 }
 
 export const ProductsShell: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  const paramProductId = searchParams.get('product_id');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const paramProductId = searchParams.get('product_id') || searchParams.get('product');
 
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<ProductItem | null>(null);
   const [attributes, setAttributes] = useState<ProductAttributeItem[]>([]);
-  useEffect(() => {
-    console.log("REACT ATTRIBUTES:", attributes);
-    console.log(
-      "AMBIENT TEMP:",
-      attributes.find(
-        (a) => a.attribute_name === "ambient_temperature"
-      )
-    );
-  }, [attributes]);
   const [evidenceList, setEvidenceList] = useState<EvidenceItem[]>([]);
   const [validationIssues, setValidationIssues] = useState<any[]>([]);
   const [enrichmentData, setEnrichmentData] = useState<any>(null);
+  const [validationSummary, setValidationSummary] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedAttrId, setSelectedAttrId] = useState<string | null>(null);
+  const [exportLoading, setExportLoading] = useState<boolean>(false);
+
+  // Filters
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+
+  // Detail Active Tab
+  const [activeTab, setActiveTab] = useState<'enrichment' | 'attributes' | 'reconciliation' | 'validation'>('enrichment');
 
   useEffect(() => {
     fetchProducts();
-  }, [paramProductId]);
+  }, []);
 
   const fetchProducts = async () => {
     try {
@@ -72,16 +90,10 @@ export const ProductsShell: React.FC = () => {
       if (res.ok) {
         const data: ProductItem[] = await res.json();
         setProducts(data);
-        if (data.length > 0) {
-          let target = data[0];
-          if (paramProductId) {
-            const paramMatch = data.find((p) => p.id === paramProductId);
-            if (paramMatch) target = paramMatch;
-          } else if (selectedProduct) {
-            const currentMatch = data.find((p) => p.id === selectedProduct.id);
-            if (currentMatch) target = currentMatch;
-          }
-          selectProduct(target);
+
+        if (paramProductId) {
+          const match = data.find((p) => p.id === paramProductId);
+          if (match) selectProduct(match);
         }
       }
     } catch (err) {
@@ -94,6 +106,8 @@ export const ProductsShell: React.FC = () => {
   const selectProduct = async (prod: ProductItem) => {
     setSelectedProduct(prod);
     setSelectedAttrId(null);
+    setSearchParams({ product_id: prod.id });
+
     try {
       const [attrRes, evidRes, valRes, enrichRes] = await Promise.all([
         fetch(`/api/v1/products/${prod.id}/attributes`),
@@ -102,32 +116,29 @@ export const ProductsShell: React.FC = () => {
         fetch(`/api/v1/products/${prod.id}/enrichment`),
       ]);
 
-      if (attrRes.ok) {
-        const fetchedAttrs: ProductAttributeItem[] = await attrRes.json();
-        setAttributes(fetchedAttrs);
-      }
-      if (evidRes.ok) {
-        setEvidenceList(await evidRes.json());
-      }
+      if (attrRes.ok) setAttributes(await attrRes.json());
+      if (evidRes.ok) setEvidenceList(await evidRes.json());
       if (valRes.ok) {
         const valData = await valRes.json();
         setValidationIssues(valData.issues || []);
+        setValidationSummary(valData);
       }
-      if (enrichRes.ok) {
-        setEnrichmentData(await enrichRes.json());
-      }
+      if (enrichRes.ok) setEnrichmentData(await enrichRes.json());
     } catch (err) {
       console.error('Failed to fetch product details:', err);
     }
+  };
+
+  const clearSelection = () => {
+    setSelectedProduct(null);
+    setSearchParams({});
   };
 
   const handleRerunValidation = async () => {
     if (!selectedProduct) return;
     try {
       const res = await fetch(`/api/v1/products/${selectedProduct.id}/validate`, { method: 'POST' });
-      if (res.ok) {
-        fetchProducts();
-      }
+      if (res.ok) selectProduct(selectedProduct);
     } catch (err) {
       console.error('Failed to rerun validation:', err);
     }
@@ -137,241 +148,534 @@ export const ProductsShell: React.FC = () => {
     if (!selectedProduct) return;
     try {
       const res = await fetch(`/api/v1/products/${selectedProduct.id}/enrich`, { method: 'POST' });
-      if (res.ok) {
-        fetchProducts();
-      }
+      if (res.ok) selectProduct(selectedProduct);
     } catch (err) {
       console.error('Failed to rerun enrichment:', err);
     }
   };
 
-  if (loading) {
-    return (
-      <div className="p-12 text-center text-slate-400 font-medium">
-        Loading CatalogIQ Product Intelligence...
-      </div>
-    );
-  }
+  const handleExportCatalog = async (format: string = 'xlsx') => {
+    setExportLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('format', format);
+      if (statusFilter !== 'all') params.append('status', statusFilter);
+      if (categoryFilter !== 'all') params.append('category', categoryFilter);
 
-  if (products.length === 0) {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-3xl font-bold tracking-tight">Product Intelligence Dashboard</h2>
-            <p className="text-sm text-slate-400">Validated, quality-scored, and evidence-backed product catalog.</p>
-          </div>
-        </div>
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center text-slate-400 flex flex-col items-center justify-center space-y-3">
-          <Database className="w-12 h-12 text-slate-600" />
-          <h4 className="font-semibold text-slate-200 text-lg">No Products in Database</h4>
-          <p className="text-sm max-w-sm text-slate-400">
-            Upload technical datasheets (such as synthetic_motor.pdf) to parse, extract, validate, and enrich product intelligence.
-          </p>
-        </div>
-      </div>
-    );
-  }
+      const res = await fetch(`/api/v1/products/export?${params.toString()}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = format === 'xlsx' ? 'CatalogIQ_Export.xlsx' : 'CatalogIQ_Export.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      console.error('Failed to export catalog:', err);
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
+  // Filter products
+  const categories = Array.from(new Set(products.map((p) => p.category).filter(Boolean)));
+  const filteredProducts = products.filter((p) => {
+    const matchesSearch =
+      !searchQuery ||
+      p.product_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.brand.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const matchesStatus =
+      statusFilter === 'all' || p.status.toLowerCase() === statusFilter.toLowerCase();
+
+    const matchesCategory =
+      categoryFilter === 'all' || p.category.toLowerCase() === categoryFilter.toLowerCase();
+
+    return matchesSearch && matchesStatus && matchesCategory;
+  });
 
   const selectedEvidence = evidenceList.filter(
     (e) => !selectedAttrId || e.attribute_id === selectedAttrId
   );
 
-  return (
-    <div className="space-y-6 text-slate-100">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-3xl font-bold tracking-tight text-white flex items-center gap-2">
-            <span>⚡</span> Product Intelligence Dashboard
-          </h2>
-          <p className="text-sm text-slate-400">
-            Validation, Conflict Resolution & Evidence-Backed AI Commerce Enrichment
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <select
-            value={selectedProduct?.id || ''}
-            onChange={(e) => {
-              const p = products.find((x) => x.id === e.target.value);
-              if (p) selectProduct(p);
-            }}
-            className="bg-slate-800 border border-slate-700 text-slate-200 px-4 py-2 rounded-lg text-sm font-medium outline-none"
-          >
-            {products.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.product_name} ({p.sku})
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={handleRerunValidation}
-            className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 transition"
-          >
-            Re-validate
-          </button>
-          <button
-            onClick={handleRerunEnrichment}
-            className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
-          >
-            Re-enrich AI
-          </button>
-        </div>
+  if (loading) {
+    return (
+      <div className="space-y-6 animate-pulse text-foreground">
+        <div className="h-8 w-64 bg-card border border-border"></div>
+        <div className="h-96 border border-border bg-card"></div>
       </div>
+    );
+  }
 
-      {selectedProduct && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main Specs & Intelligence Column */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Product Banner */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl relative overflow-hidden">
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold px-2.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800">
-                      {selectedProduct.brand}
-                    </span>
-                    <span className="text-xs text-slate-400 font-mono">SKU: {selectedProduct.sku}</span>
-                  </div>
-                  <h3 className="text-2xl font-black text-white mt-2">{selectedProduct.product_name}</h3>
-                  <p className="text-xs text-slate-400 mt-1 font-mono">
-                    Category: <span className="text-slate-200">{selectedProduct.category}</span>
-                  </p>
-                </div>
+  // ==========================================
+  // 1. PRODUCT DETAIL CENTERPIECE VIEW
+  // ==========================================
+  if (selectedProduct) {
+    const isNeedsReview = selectedProduct.status === 'needs_review';
 
-                <div className="text-right">
-                  <div className="flex items-center gap-2 justify-end">
-                    {selectedProduct.status === 'verified' ? (
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-950 text-emerald-300 border border-emerald-800 rounded-full text-xs font-bold uppercase tracking-wider">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Verified
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-950 text-amber-300 border border-amber-800 rounded-full text-xs font-bold uppercase tracking-wider">
-                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> Needs Review
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-3">
-                    <span className="text-[10px] text-slate-400 block uppercase tracking-wider font-semibold">
-                      Quality Score
-                    </span>
-                    <span className="text-3xl font-black text-emerald-400">
-                      {selectedProduct.quality_score}/100
-                    </span>
-                  </div>
+    return (
+      <div className="space-y-8 text-foreground rounded-none">
+        {/* Navigation Breadcrumb & Back button */}
+        <div className="flex items-center justify-between">
+          <button
+            onClick={clearSelection}
+            className="inline-flex items-center gap-2 text-xs uppercase tracking-widest font-light text-muted-foreground hover:text-foreground transition"
+          >
+            <ArrowLeft className="w-4 h-4 text-[#9B8F77]" />
+            <span>Back to Product Catalog</span>
+          </button>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => handleExportCatalog('csv')}
+              className="h-9 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition rounded-none inline-flex items-center gap-1.5"
+            >
+              <Download className="w-3.5 h-3.5 text-[#9B8F77]" />
+              Export CSV
+            </button>
+            <button
+              onClick={handleRerunValidation}
+              className="h-9 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition rounded-none"
+            >
+              Re-validate
+            </button>
+            <button
+              onClick={handleRerunEnrichment}
+              className="h-9 px-4 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition rounded-none"
+            >
+              Re-enrich AI
+            </button>
+          </div>
+        </div>
+
+        {/* Needs Review Banner */}
+        {isNeedsReview && (
+          <div className="border border-amber-500/40 bg-amber-500/5 p-4 flex items-center justify-between rounded-none">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              <div>
+                <div className="text-xs font-medium text-amber-500 uppercase tracking-wider">This product requires human review</div>
+                <div className="text-[11px] text-muted-foreground font-light">
+                  {validationIssues.length} validation issue{validationIssues.length !== 1 ? 's' : ''} found — see the Validation tab for details.
                 </div>
               </div>
+            </div>
+            <Link
+              to={`/reviews?product_id=${selectedProduct.id}`}
+              className="h-9 px-4 bg-amber-500 text-white text-[10px] uppercase tracking-widest font-semibold transition rounded-none inline-flex items-center gap-1.5 hover:bg-amber-600 shrink-0"
+            >
+              <span>Go to Review</span>
+              <ArrowRight className="w-3 h-3" />
+            </Link>
+          </div>
+        )}
 
-              {selectedProduct.description && (
-                <div className="mt-4 pt-4 border-t border-slate-800 text-sm text-slate-300">
-                  {selectedProduct.description}
+        {/* Product Identity Header Card */}
+        <div className="border border-border bg-card p-6 md:p-8 rounded-none relative overflow-hidden space-y-4">
+          <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="px-2.5 py-0.5 border border-border bg-background font-mono text-[10px] text-[#9B8F77]">
+                  {selectedProduct.brand}
+                </span>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  SKU: <strong className="text-foreground">{selectedProduct.sku}</strong>
+                </span>
+                {selectedProduct.model && (
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    Model: <strong className="text-foreground">{selectedProduct.model}</strong>
+                  </span>
+                )}
+              </div>
+
+              <h1 className="text-3xl sm:text-4xl font-serif font-normal text-foreground tracking-tight">
+                {selectedProduct.product_name}
+              </h1>
+
+              <div className="flex items-center gap-4 text-xs text-muted-foreground font-light">
+                <span>Category: <strong className="text-foreground font-medium">{selectedProduct.category}</strong></span>
+                <span>•</span>
+                <span>{attributes.length} Extracted Attributes</span>
+              </div>
+            </div>
+
+            <div className="flex md:flex-col items-end gap-3 shrink-0">
+              <StatusBadge status={selectedProduct.status} size="lg" />
+              <div className="text-right">
+                <div className="text-[9px] uppercase tracking-widest text-muted-foreground font-medium">
+                  Catalog Quality
+                </div>
+                <div className="text-2xl font-serif font-normal text-emerald-500">
+                  {Math.round(selectedProduct.quality_score)}%
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Explainable Quality Score Breakdown Grid */}
+          <div className="mt-4 pt-4 border-t border-border/80">
+            <div className="text-[10px] uppercase tracking-widest font-mono text-[#9B8F77] mb-2.5 flex items-center justify-between">
+              <span>Quality Score Breakdown & Provenance Dimensions</span>
+              <span className="text-muted-foreground font-normal">Deterministic Dimension Scoring (100 pts max)</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
+              <div className="p-2.5 border border-border bg-background/60 space-y-1">
+                <div className="text-[9px] uppercase tracking-wider text-muted-foreground">1. Identity</div>
+                <div className="font-mono font-bold text-foreground">
+                  {selectedProduct.brand && selectedProduct.sku ? '20' : '10'}/20
+                </div>
+                <div className="text-[9px] text-[#9B8F77]">Canonical MFR/Brand</div>
+              </div>
+
+              <div className="p-2.5 border border-border bg-background/60 space-y-1">
+                <div className="text-[9px] uppercase tracking-wider text-muted-foreground">2. Taxonomy</div>
+                <div className="font-mono font-bold text-foreground">
+                  {selectedProduct.category && !selectedProduct.category.includes('General Supplies') ? '20' : '10'}/20
+                </div>
+                <div className="text-[9px] text-[#9B8F77]">Approved Classpath</div>
+              </div>
+
+              <div className="p-2.5 border border-border bg-background/60 space-y-1">
+                <div className="text-[9px] uppercase tracking-wider text-muted-foreground">3. Attributes</div>
+                <div className="font-mono font-bold text-foreground">
+                  {Math.min(25, 10 + attributes.length * 3)}/25
+                </div>
+                <div className="text-[9px] text-[#9B8F77]">{attributes.length} Extracted Specs</div>
+              </div>
+
+              <div className="p-2.5 border border-border bg-background/60 space-y-1">
+                <div className="text-[9px] uppercase tracking-wider text-muted-foreground">4. Evidence</div>
+                <div className="font-mono font-bold text-foreground">
+                  {evidenceList.length > 0 || attributes.some(a => a.attribute_name === 'MFR URL' || a.attribute_name === 'URL' || a.attribute_name === 'PDF Link') ? '15' : '10'}/15
+                </div>
+                <div className="text-[9px] text-[#9B8F77]">OEM Source Mapping</div>
+              </div>
+
+              <div className="p-2.5 border border-border bg-background/60 space-y-1">
+                <div className="text-[9px] uppercase tracking-wider text-muted-foreground">5. Content</div>
+                <div className="font-mono font-bold text-foreground">
+                  {selectedProduct.commerce_description ? '10' : '5'}/10
+                </div>
+                <div className="text-[9px] text-[#9B8F77]">Commerce Summary</div>
+              </div>
+
+              <div className="p-2.5 border border-border bg-background/60 space-y-1">
+                <div className="text-[9px] uppercase tracking-wider text-muted-foreground">6. Validation</div>
+                <div className="font-mono font-bold text-foreground">
+                  {Math.max(0, 10 - validationIssues.length * 5)}/10
+                </div>
+                <div className={`text-[9px] ${validationIssues.length === 0 ? 'text-emerald-500' : 'text-amber-500'}`}>
+                  {validationIssues.length === 0 ? '0 Blocking Issues' : `${validationIssues.length} Open Issues`}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Visual Transformation Stepper */}
+        <EnrichmentStepper
+          status={selectedProduct.status}
+          qualityScore={selectedProduct.quality_score}
+        />
+
+        {/* Tab Navigation */}
+        <div className="flex border-b border-border gap-6 text-xs uppercase tracking-widest font-light">
+          {[
+            { id: 'enrichment', label: 'Commerce Intelligence', icon: Sparkles },
+            { id: 'attributes', label: `Technical Specs (${attributes.length})`, icon: Layers },
+            { id: 'reconciliation', label: 'Multi-Source Reconciliation', icon: Database },
+            { id: 'validation', label: `Validation (${validationIssues.length})`, icon: ShieldCheck },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`pb-3 flex items-center gap-2 border-b-2 transition-all ${
+                  isActive
+                    ? 'border-foreground text-foreground font-medium'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5 text-[#9B8F77]" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Tab Contents */}
+        {activeTab === 'enrichment' && (
+          <EnrichmentPanel
+            enrichment={enrichmentData}
+            onRerunEnrichment={handleRerunEnrichment}
+          />
+        )}
+
+        {activeTab === 'attributes' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Attributes Table */}
+            <div className="lg:col-span-2 border border-border bg-card p-6 rounded-none space-y-4">
+              <h3 className="font-serif text-xl font-normal text-foreground flex items-center gap-2 border-b border-border pb-3">
+                <Layers className="w-4 h-4 text-[#9B8F77]" />
+                <span>Extracted Engineering Attributes</span>
+              </h3>
+
+              <div className="divide-y divide-border">
+                {attributes.map((attr) => {
+                  const isSelected = selectedAttrId === attr.id;
+                  const hasEvid = evidenceList.some((e) => e.attribute_id === attr.id);
+                  const formatted = formatAttrValueAndUnit(attr.raw_value, attr.unit, attr.normalized_value);
+                  return (
+                    <div
+                      key={attr.id}
+                      onClick={() => setSelectedAttrId(isSelected ? null : attr.id)}
+                      className={`py-3 px-3 flex items-center justify-between gap-4 cursor-pointer transition rounded-none ${
+                        isSelected
+                          ? 'bg-accent/60 border-l-2 border-foreground'
+                          : 'hover:bg-accent/30'
+                      }`}
+                    >
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="text-xs font-medium text-foreground flex items-center gap-2">
+                          <span>{attr.display_name || attr.attribute_name}</span>
+                          {hasEvid && (
+                            <span className="text-[9px] font-mono text-[#9B8F77] px-1.5 py-0.2 border border-border bg-background">
+                              Evidence
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs font-mono text-muted-foreground">
+                          {formatted.value} {formatted.unit && <span className="text-foreground">{formatted.unit}</span>}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3 shrink-0">
+                        <ConfidenceBadge confidence={attr.confidence} size="sm" />
+                        <StatusBadge status={attr.status} size="sm" />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Evidence Provenance Sidebar */}
+            <div className="border border-border bg-card p-6 rounded-none space-y-4">
+              <h3 className="font-serif text-xl font-normal text-foreground flex items-center gap-2 border-b border-border pb-3">
+                <FileText className="w-4 h-4 text-[#9B8F77]" />
+                <span>Evidence & Provenance</span>
+              </h3>
+
+              {selectedEvidence.length === 0 ? (
+                <div className="py-12 text-center text-xs text-muted-foreground space-y-2 font-light uppercase tracking-wider">
+                  <FileText className="w-8 h-8 mx-auto text-muted-foreground opacity-50" />
+                  <p>Select an attribute to inspect verbatim source evidence citations.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {selectedEvidence.map((evid) => (
+                    <div key={evid.id} className="p-4 border border-border bg-background space-y-2 rounded-none">
+                      <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+                        <span className="text-[#9B8F77]">
+                          {evid.page_number ? `Page ${evid.page_number}` : 'Document Source'}
+                        </span>
+                        <span className="uppercase text-[9px]">
+                          {evid.extraction_method}
+                        </span>
+                      </div>
+                      <blockquote className="text-xs text-foreground italic border-l-2 border-[#9B8F77] pl-3 leading-relaxed font-light">
+                        "{evid.evidence_text}"
+                      </blockquote>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
+          </div>
+        )}
 
-            {/* Specifications Table */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-4">
-              <h4 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                <FileText className="w-5 h-5 text-indigo-400" /> Technical Specifications
-              </h4>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-800 text-xs font-semibold uppercase text-slate-400 font-mono">
-                      <th className="py-2.5 px-3">Specification</th>
-                      <th className="py-2.5 px-3">Value</th>
-                      <th className="py-2.5 px-3">Unit</th>
-                      <th className="py-2.5 px-3">Confidence</th>
-                      <th className="py-2.5 px-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60">
-                    {attributes.map((attr) => (
-                      <tr
-                        key={attr.id}
-                        onClick={() => setSelectedAttrId(attr.id)}
-                        className={`cursor-pointer transition ${selectedAttrId === attr.id ? 'bg-indigo-950/40' : 'hover:bg-slate-800/40'
-                          }`}
-                      >
-                        <td className="py-3 px-3 font-medium text-slate-200">{attr.display_name}</td>
-                        <td className="py-3 px-3 font-semibold text-emerald-400">{attr.raw_value}</td>
-                        <td className="py-3 px-3 font-mono text-slate-400">{attr.unit || '—'}</td>
-                        <td className="py-3 px-3 font-mono text-xs">{Math.round(attr.confidence * 100)}%</td>
-                        <td className="py-3 px-3">
-                          <span
-                            className={`text-[11px] font-semibold px-2 py-0.5 rounded border uppercase font-mono ${attr.status === 'verified'
-                              ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
-                              : attr.status === 'conflicting'
-                                ? 'bg-red-950 text-red-300 border-red-800'
-                                : 'bg-amber-950 text-amber-300 border-amber-800'
-                              }`}
-                          >
-                            {attr.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+        {activeTab === 'reconciliation' && (
+          <MultiSourceReconciliationPanel productId={selectedProduct.id} />
+        )}
 
-            {/* Validation Panel */}
-            <ValidationPanel
-              productId={selectedProduct.id}
-              qualityScore={selectedProduct.quality_score}
-              issues={validationIssues}
-              onResolutionCompleted={fetchProducts}
-            />
+        {activeTab === 'validation' && (
+          <ValidationPanel
+            productId={selectedProduct.id}
+            productStatus={selectedProduct.status}
+            qualityScore={selectedProduct.quality_score}
+            completenessScore={validationSummary?.completeness_score}
+            issues={validationIssues}
+            onResolutionCompleted={fetchProducts}
+          />
+        )}
+      </div>
+    );
+  }
 
-            {/* Multi-Source Reconciliation Panel */}
-            <MultiSourceReconciliationPanel
-              productId={selectedProduct.id}
-              onRefreshRequested={fetchProducts}
-            />
+  // ==========================================
+  // 2. CATALOG TABLE & INVENTORY VIEW
+  // ==========================================
+  return (
+    <div className="space-y-8 text-foreground rounded-none">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="inline-flex items-center gap-2 border border-[#9B8F77]/30 bg-[#9B8F77]/5 px-3 py-1 text-[9px] uppercase tracking-widest font-medium text-[#9B8F77] mb-2">
+            <Database className="w-3.5 h-3.5" />
+            Verified Master Catalog
+          </div>
+          <h1 className="text-3xl lg:text-4xl font-serif font-normal text-foreground tracking-tight">
+            Product Catalog & Intelligence
+          </h1>
+          <p className="text-xs uppercase tracking-wider text-muted-foreground font-light">
+            Browse and inspect all validated, quality-scored, and enriched industrial items.
+          </p>
+        </div>
 
-            {/* AI Commerce Enrichment Panel */}
-            <EnrichmentPanel
-              enrichment={enrichmentData}
-              onRerunEnrichment={handleRerunEnrichment}
+        <div className="flex items-center gap-3 self-start sm:self-auto">
+          {/* Export Buttons */}
+          <button
+            onClick={() => handleExportCatalog('xlsx')}
+            disabled={exportLoading || products.length === 0}
+            className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition duration-150 rounded-none inline-flex items-center gap-2 disabled:opacity-40"
+          >
+            <Download className="w-3.5 h-3.5 text-[#9B8F77]" />
+            <span>Export Excel</span>
+          </button>
+          <button
+            onClick={() => handleExportCatalog('csv')}
+            disabled={exportLoading || products.length === 0}
+            className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition duration-150 rounded-none inline-flex items-center gap-2 disabled:opacity-40"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Export CSV</span>
+          </button>
+          <Link
+            to="/upload"
+            className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-[#9B8F77]" />
+            <span>Import Catalog</span>
+          </Link>
+        </div>
+      </div>
+
+      {/* Filter Toolbar */}
+      <div className="p-4 border border-border bg-card flex flex-wrap items-center justify-between gap-4 rounded-none">
+        <div className="flex items-center gap-3 flex-1 min-w-[240px]">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search products by SKU, Name, or Brand..."
+              className="w-full pl-9 pr-4 py-2 bg-background border border-border text-xs text-foreground placeholder:text-muted-foreground outline-none focus:border-foreground transition rounded-none font-light"
             />
           </div>
+        </div>
 
-          {/* Evidence & Provenance Column */}
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-4 sticky top-6">
-              <h4 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                <span>🔎</span> Evidence Provenance
-              </h4>
-              <p className="text-xs text-slate-400">
-                {selectedAttrId
-                  ? 'Showing evidence quotes for selected attribute'
-                  : 'Click any specification to inspect original document evidence'}
-              </p>
+        <div className="flex items-center gap-3">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-3 py-2 bg-background border border-border text-xs uppercase tracking-wider text-foreground outline-none rounded-none"
+          >
+            <option value="all">All Statuses</option>
+            <option value="verified">Verified</option>
+            <option value="needs_review">Needs Review</option>
+            <option value="draft">Draft</option>
+          </select>
 
-              <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
-                {selectedEvidence.length === 0 ? (
-                  <p className="text-xs text-slate-500 italic p-4 text-center">
-                    No evidence quotes recorded for selection.
-                  </p>
-                ) : (
-                  selectedEvidence.map((ev) => (
-                    <div
-                      key={ev.id}
-                      className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2 text-xs"
-                    >
-                      <div className="flex items-center justify-between text-slate-400 font-mono text-[11px]">
-                        <span>Page {ev.page_number || 1}</span>
-                        <span className="capitalize">{ev.extraction_method}</span>
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="px-3 py-2 bg-background border border-border text-xs uppercase tracking-wider text-foreground outline-none rounded-none"
+          >
+            <option value="all">All Categories</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Catalog Table */}
+      {filteredProducts.length === 0 ? (
+        <div className="p-12 border border-border bg-card text-center space-y-4 rounded-none">
+          <Database className="w-12 h-12 text-muted-foreground opacity-50 mx-auto" />
+          <h3 className="font-serif text-xl font-normal text-foreground">
+            {products.length === 0 ? 'No Products in Catalog' : 'No Matching Products Found'}
+          </h3>
+          <p className="text-xs uppercase tracking-wider text-muted-foreground font-light">
+            {products.length === 0
+              ? 'Upload a document to start building your product catalog.'
+              : 'Try adjusting your search query or status filter.'}
+          </p>
+          {products.length === 0 && (
+            <Link
+              to="/upload"
+              className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Upload Document</span>
+            </Link>
+          )}
+        </div>
+      ) : (
+        <div className="border border-border bg-card overflow-hidden rounded-none">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-border bg-background/50 text-[9px] uppercase tracking-widest text-muted-foreground font-medium">
+                  <th className="py-3.5 px-5">Product Details</th>
+                  <th className="py-3.5 px-4">Brand</th>
+                  <th className="py-3.5 px-4">SKU / MPN</th>
+                  <th className="py-3.5 px-4">Category</th>
+                  <th className="py-3.5 px-4">Quality Score</th>
+                  <th className="py-3.5 px-4">Status</th>
+                  <th className="py-3.5 px-4 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border text-xs">
+                {filteredProducts.map((prod) => (
+                  <tr
+                    key={prod.id}
+                    onClick={() => selectProduct(prod)}
+                    className="hover:bg-accent/40 cursor-pointer transition group"
+                  >
+                    <td className="py-3.5 px-5">
+                      <div className="font-medium text-foreground group-hover:text-[#9B8F77] transition">
+                        {prod.product_name}
                       </div>
-                      <blockquote className="bg-slate-900/90 border-l-2 border-emerald-500 p-2.5 rounded text-slate-200 italic font-mono text-[11px] leading-relaxed">
-                        "{ev.evidence_text}"
-                      </blockquote>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
+                    </td>
+                    <td className="py-3.5 px-4 font-light text-muted-foreground">{prod.brand}</td>
+                    <td className="py-3.5 px-4 font-mono text-muted-foreground">{prod.sku}</td>
+                    <td className="py-3.5 px-4 text-muted-foreground font-light">{prod.category}</td>
+                    <td className="py-3.5 px-4">
+                      <ConfidenceBadge confidence={prod.quality_score} size="sm" />
+                    </td>
+                    <td className="py-3.5 px-4">
+                      <StatusBadge status={prod.status} size="sm" />
+                    </td>
+                    <td className="py-3.5 px-4 text-right">
+                      <button className="text-muted-foreground group-hover:text-foreground transition">
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

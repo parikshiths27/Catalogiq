@@ -20,10 +20,12 @@ class QdrantService:
     Abstraction layer over QdrantClient for CatalogIQ vector indexing and semantic retrieval.
     """
 
-    def __init__(self, url: Optional[str] = None, timeout: float = 5.0):
+    def __init__(self, url: Optional[str] = None, timeout: float = 1.0):
         self.url = url or settings.QDRANT_URL
         self.timeout = timeout
         self._client: Optional[QdrantClient] = None
+        self._is_healthy: Optional[bool] = None
+        self._last_health_check: float = 0.0
 
     @property
     def client(self) -> QdrantClient:
@@ -32,11 +34,19 @@ class QdrantService:
         return self._client
 
     def health_check(self) -> bool:
-        """Returns True if Qdrant instance is reachable and healthy."""
+        """Returns True if Qdrant instance is reachable and healthy (cached for 30s)."""
+        import time
+        now = time.time()
+        if self._is_healthy is not None and (now - self._last_health_check) < 30.0:
+            return self._is_healthy
+
+        self._last_health_check = now
         try:
             self.client.get_collections()
+            self._is_healthy = True
             return True
         except Exception as e:
+            self._is_healthy = False
             logger.warning(f"Qdrant health check failed ({self.url}): {e}")
             return False
 
