@@ -127,6 +127,36 @@ def _dispatch_next_task(task_func, *args):
         task_func(*args)
 
 
+import time
+
+def _get_entities_with_retry(
+    session: Session,
+    doc_id: uuid.UUID,
+    job_id: uuid.UUID,
+    step_id: uuid.UUID,
+    max_attempts: int = 5,
+    delay_s: float = 0.5
+) -> tuple[Optional[Document], Optional[ProcessingJob], Optional[ProcessingStep]]:
+    """Fetches document, job, and step entities with short retries to accommodate remote database commit latency."""
+    for attempt in range(max_attempts):
+        document = session.get(Document, doc_id)
+        job = session.get(ProcessingJob, job_id)
+        step = session.get(ProcessingStep, step_id)
+        if document and job and step:
+            return document, job, step
+        if attempt < max_attempts - 1:
+            time.sleep(delay_s)
+            try:
+                session.rollback()
+            except Exception:
+                pass
+    return (
+        session.get(Document, doc_id),
+        session.get(ProcessingJob, job_id),
+        session.get(ProcessingStep, step_id)
+    )
+
+
 @celery_app.task(bind=True, max_retries=3)
 def process_document_task(self, document_id_str: str, job_id_str: str, step_id_str: str) -> None:
     """
@@ -143,9 +173,7 @@ def process_document_task(self, document_id_str: str, job_id_str: str, step_id_s
     logger.info(f"[Stage 1: Parsing] Starting for Doc: {doc_id}, Job: {job_id}")
 
     with Session(engine) as session:
-        document = session.get(Document, doc_id)
-        job = session.get(ProcessingJob, job_id)
-        step = session.get(ProcessingStep, step_id)
+        document, job, step = _get_entities_with_retry(session, doc_id, job_id, step_id)
 
         if not document or not job or not step:
             logger.error(
@@ -274,9 +302,7 @@ def extract_document_task(
     logger.info(f"[Stage 2: Extraction] Starting for Doc: {doc_id}, Job: {job_id}")
 
     with Session(engine) as session:
-        document = session.get(Document, doc_id)
-        job = session.get(ProcessingJob, job_id)
-        step = session.get(ProcessingStep, step_id)
+        document, job, step = _get_entities_with_retry(session, doc_id, job_id, step_id)
 
         if not document or not job or not step:
             logger.error(
@@ -372,9 +398,7 @@ def validate_document_task(
     logger.info(f"[Stage 3: Validation] Starting for Doc: {doc_id}, Job: {job_id}")
 
     with Session(engine) as session:
-        document = session.get(Document, doc_id)
-        job = session.get(ProcessingJob, job_id)
-        step = session.get(ProcessingStep, step_id)
+        document, job, step = _get_entities_with_retry(session, doc_id, job_id, step_id)
 
         if not document or not job or not step:
             logger.error("[Stage 3] Validation task entities not found.")
@@ -428,9 +452,7 @@ def enrich_document_task(
     logger.info(f"[Stage 4: Enrichment] Starting for Doc: {doc_id}, Job: {job_id}")
 
     with Session(engine) as session:
-        document = session.get(Document, doc_id)
-        job = session.get(ProcessingJob, job_id)
-        step = session.get(ProcessingStep, step_id)
+        document, job, step = _get_entities_with_retry(session, doc_id, job_id, step_id)
 
         if not document or not job or not step:
             logger.error("[Stage 4] Enrichment task entities not found.")
