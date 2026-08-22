@@ -15,6 +15,7 @@ import {
   UserCheck
 } from 'lucide-react';
 import { ConfidenceBadge } from '../../components/ui/ConfidenceBadge';
+import { apiUrl } from '../../lib/api';
 
 interface EvidenceItem {
   id: string;
@@ -154,7 +155,7 @@ export const ReviewsShell: React.FC = () => {
       if (paramProductId) params.append('product_id', paramProductId);
       if (paramIssueType) params.append('issue_type', paramIssueType);
 
-      const res = await fetch(`/api/v1/reviews?${params.toString()}`);
+      const res = await fetch(apiUrl(`/api/v1/reviews?${params.toString()}`));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reviewData: ReviewsResponse = await res.json();
       setData(reviewData);
@@ -168,7 +169,7 @@ export const ReviewsShell: React.FC = () => {
 
   const fetchApprovedTaxonomies = async () => {
     try {
-      const res = await fetch('/api/v1/reviews/approved-taxonomies');
+      const res = await fetch(apiUrl('/api/v1/reviews/approved-taxonomies'));
       if (res.ok) {
         const list: string[] = await res.json();
         setApprovedTaxonomies(list);
@@ -200,7 +201,7 @@ export const ReviewsShell: React.FC = () => {
         resolved_value: effectiveVal,
       };
 
-      const res = await fetch(`/api/v1/reviews/items/${selectedReview.validation_id}/resolve`, {
+      const res = await fetch(apiUrl(`/api/v1/reviews/items/${selectedReview.validation_id}/resolve`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

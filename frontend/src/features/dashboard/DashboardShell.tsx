@@ -13,6 +13,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { formatApiDateTime } from '../../lib/dates';
+import { apiUrl } from '../../lib/api';
 
 interface OverviewKpis {
   total_products: number;
@@ -79,7 +80,7 @@ export const DashboardShell: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch('/api/v1/overview/summary');
+      const res = await fetch(apiUrl('/api/v1/overview/summary'));
       if (!res.ok) {
         throw new Error(`Server returned HTTP ${res.status}`);
       }

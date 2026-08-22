@@ -64,10 +64,12 @@ class HybridSearchService:
         session: Session,
         keyword_service: Optional[KeywordSearchService] = None,
         qdrant_service: Optional[QdrantService] = None,
+        embedding_provider: Optional[Any] = None,
     ):
         self.session = session
         self.keyword_service = keyword_service or KeywordSearchService(session)
         self.qdrant_service = qdrant_service or QdrantService()
+        self.embedding_provider = embedding_provider
 
     def search_hybrid(
         self,
@@ -146,7 +148,7 @@ class HybridSearchService:
         query_vector: Optional[List[float]] = None
         if not vector_failed:
             try:
-                provider = get_embedding_provider()
+                provider = self.embedding_provider or get_embedding_provider()
                 query_vector = provider.embed_text(raw_query)
             except Exception as e:
                 logger.error(f"Embedding generation failure in hybrid search: {e}")

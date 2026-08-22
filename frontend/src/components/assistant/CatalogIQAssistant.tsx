@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Send, Loader2, Sparkles, RefreshCw, AlertCircle, MessageSquare } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
+import { apiUrl } from '../../lib/api';
 
 interface ChatTurn {
   role: 'user' | 'assistant';
@@ -87,7 +88,7 @@ export const CatalogIQAssistant: React.FC = () => {
     }));
 
     try {
-      const response = await fetch('/api/v1/assistant/chat', {
+      const response = await fetch(apiUrl('/api/v1/assistant/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

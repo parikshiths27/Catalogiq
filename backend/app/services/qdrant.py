@@ -20,8 +20,9 @@ class QdrantService:
     Abstraction layer over QdrantClient for CatalogIQ vector indexing and semantic retrieval.
     """
 
-    def __init__(self, url: Optional[str] = None, timeout: float = 1.0):
+    def __init__(self, url: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 1.0):
         self.url = url or settings.QDRANT_URL
+        self.api_key = api_key or settings.QDRANT_API_KEY
         self.timeout = timeout
         self._client: Optional[QdrantClient] = None
         self._is_healthy: Optional[bool] = None
@@ -30,7 +31,7 @@ class QdrantService:
     @property
     def client(self) -> QdrantClient:
         if self._client is None:
-            self._client = QdrantClient(url=self.url, timeout=self.timeout)
+            self._client = QdrantClient(url=self.url, api_key=self.api_key, timeout=self.timeout)
         return self._client
 
     def health_check(self) -> bool:
@@ -151,9 +152,10 @@ class QdrantService:
             request_body["filter"] = payload_filter
 
         endpoint = f"{self.url.rstrip('/')}/collections/{target_collection}/points/search"
+        headers = {"api-key": self.api_key} if self.api_key else {}
 
         try:
-            with httpx.Client(timeout=self.timeout) as http_client:
+            with httpx.Client(timeout=self.timeout, headers=headers) as http_client:
                 resp = http_client.post(endpoint, json=request_body)
                 resp.raise_for_status()
                 data = resp.json()

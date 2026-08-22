@@ -15,6 +15,7 @@ import {
   Database
 } from 'lucide-react';
 import { StatusBadge } from '../../components/ui/StatusBadge';
+import { apiUrl } from '../../lib/api';
 
 interface BatchDocumentStatus {
   document_id: string | null;
@@ -67,6 +68,7 @@ export const UploadShell: React.FC = () => {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resetCatalogFirst, setResetCatalogFirst] = useState<boolean>(false);
 
   // Batch progress state
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -82,7 +84,7 @@ export const UploadShell: React.FC = () => {
 
     const pollBatch = async () => {
       try {
-        const res = await fetch(`/api/v1/documents/batches/${batchId}`);
+        const res = await fetch(apiUrl(`/api/v1/documents/batches/${batchId}`));
         if (!res.ok) throw new Error("Failed to fetch batch status");
         const data: BatchDetail = await res.json();
         setBatchDetail(data);
@@ -165,13 +167,21 @@ export const UploadShell: React.FC = () => {
     setRejectedUploads([]);
     setBatchDetail(null);
 
+    if (resetCatalogFirst) {
+      try {
+        await fetch(apiUrl('/api/v1/products/clear-all'), { method: 'DELETE' });
+      } catch (e) {
+        console.warn("Failed to reset catalog before upload:", e);
+      }
+    }
+
     const formData = new FormData();
     selectedFiles.forEach(file => {
       formData.append("files", file);
     });
 
     try {
-      const res = await fetch("/api/v1/documents/upload-batch", {
+      const res = await fetch(apiUrl('/api/v1/documents/upload-batch'), {
         method: "POST",
         body: formData,
       });
@@ -324,12 +334,21 @@ export const UploadShell: React.FC = () => {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-muted-foreground hover:text-foreground select-none">
+                    <input
+                      type="checkbox"
+                      checked={resetCatalogFirst}
+                      onChange={(e) => setResetCatalogFirst(e.target.checked)}
+                      className="accent-[#9B8F77]"
+                    />
+                    <span className="text-[10px] uppercase tracking-wider">Clean Slate (Reset Catalog First)</span>
+                  </label>
                   <button
                     onClick={clearSelection}
                     className="text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground"
                   >
-                    Clear All
+                    Clear Selection
                   </button>
                   <button
                     onClick={handleStartBatchUpload}

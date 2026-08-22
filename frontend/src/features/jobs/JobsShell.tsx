@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, FileText, AlertTriangle, Eye, RefreshCw, Loader2, Trash2 } from 'lucide-react';
 import { formatApiDateTime, parseApiDate } from '../../lib/dates';
+import { apiUrl } from '../../lib/api';
 
 interface DocumentInfo {
   id: string;
@@ -33,7 +34,7 @@ export const JobsShell: React.FC = () => {
   const fetchDocuments = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/v1/documents/');
+      const res = await fetch(apiUrl('/api/v1/documents/'));
       if (!res.ok) throw new Error('Failed to fetch documents list');
       const data: DocumentInfo[] = await res.json();
       // Sort by created_at desc
@@ -55,7 +56,7 @@ export const JobsShell: React.FC = () => {
     setParsedData(null);
     setLoadingParsed(true);
     try {
-      const res = await fetch(`/api/v1/documents/${docId}/parsed`);
+      const res = await fetch(apiUrl(`/api/v1/documents/${docId}/parsed`));
       if (!res.ok) throw new Error('Failed to retrieve intermediate representation');
       const data = await res.json();
       setParsedData(data);
@@ -68,7 +69,7 @@ export const JobsShell: React.FC = () => {
 
   const handleForceReprocess = async (docId: string) => {
     try {
-      const res = await fetch(`/api/v1/documents/${docId}/reprocess`, { method: 'POST' });
+      const res = await fetch(apiUrl(`/api/v1/documents/${docId}/reprocess`), { method: 'POST' });
       if (!res.ok) throw new Error('Reprocess request failed');
       // Refresh documents list
       fetchDocuments();
@@ -83,7 +84,7 @@ export const JobsShell: React.FC = () => {
     }
     try {
       setClearing(true);
-      const res = await fetch('/api/v1/documents/clear-all', { method: 'DELETE' });
+      const res = await fetch(apiUrl('/api/v1/documents/clear-all'), { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to clear processing logs');
       setDocuments([]);
       setError(null);

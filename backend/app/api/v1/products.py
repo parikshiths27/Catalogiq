@@ -91,9 +91,10 @@ class ResolutionRequest(BaseModel):
     notes: Optional[str] = None
 
 
+@router.get("", response_model=List[Product])
 @router.get("/", response_model=List[Product])
 def list_products(
-    limit: int = 100,
+    limit: int = 10000,
     offset: int = 0,
     status: Optional[str] = None,
     brand: Optional[str] = None,
@@ -112,6 +113,55 @@ def list_products(
         quality_score_min=quality_score_min,
         quality_score_max=quality_score_max,
     )
+
+
+@router.delete("/clear-all")
+def clear_all_products(session: Session = Depends(get_session)):
+    """
+    Clears all products and their associated attributes, evidence, enrichment results,
+    and validation issues from the database for a clean slate.
+    """
+    from sqlmodel import select as sel
+    from app.models import (
+        Product, ProductAttribute, AttributeEvidence, ValidationResult,
+        EnrichmentResult, DuplicateCandidate, ProductVersion, ProductDocumentAssociation
+    )
+
+    # Clean associations & child tables
+    session.exec(sel(AttributeEvidence)).all()
+    for ev in session.exec(sel(AttributeEvidence)).all():
+        session.delete(ev)
+
+    for attr in session.exec(sel(ProductAttribute)).all():
+        session.delete(attr)
+
+    for val in session.exec(sel(ValidationResult)).all():
+        session.delete(val)
+
+    for enr in session.exec(sel(EnrichmentResult)).all():
+        session.delete(enr)
+
+    for dc in session.exec(sel(DuplicateCandidate)).all():
+        session.delete(dc)
+
+    for pv in session.exec(sel(ProductVersion)).all():
+        session.delete(pv)
+
+    for pda in session.exec(sel(ProductDocumentAssociation)).all():
+        session.delete(pda)
+
+    prods = session.exec(sel(Product)).all()
+    prod_count = len(prods)
+    for p in prods:
+        session.delete(p)
+
+    session.commit()
+
+    return {
+        "status": "cleared",
+        "products_removed": prod_count,
+        "message": f"Successfully cleared {prod_count} products and all associated attributes, evidence, and validations."
+    }
 
 
 UNILOG_252_HEADERS = [
@@ -137,6 +187,7 @@ UNILOG_252_HEADERS = [
 @router.get("/export")
 def export_products(
     format: str = "csv",
+    product_id: Optional[uuid.UUID] = None,
     status: Optional[str] = None,
     brand: Optional[str] = None,
     category: Optional[str] = None,
@@ -146,7 +197,7 @@ def export_products(
     session: Session = Depends(get_session),
 ):
     """
-    Export product catalog in the authoritative 252-column Unilog Delivery Format (or XLSX).
+    Export product catalog in the authoritative 252-column Unilog Delivery Format (or XLSX / PDF / JSON).
     Maps Product, ProductAttribute, and EnrichmentResult directly into standard client delivery columns.
     """
     import csv as csv_module
@@ -155,40 +206,63 @@ def export_products(
     from fastapi.responses import StreamingResponse
 
     repo = ProductRepository(session)
-    products = repo.list_products(
-        limit=10000,
-        offset=0,
-        status=status,
-        brand=brand,
-        category=category,
-        quality_score_min=quality_score_min,
-        quality_score_max=quality_score_max,
-    )
+
+    if product_id:
+        single_prod = repo.get_by_id(product_id)
+        products = [single_prod] if single_prod else []
+    else:
+        products = repo.list_products(
+            limit=10000,
+            offset=0,
+            status=status,
+            brand=brand,
+            category=category,
+            quality_score_min=quality_score_min,
+            quality_score_max=quality_score_max,
+        )
+
+    product_ids = [p.id for p in products]
+
+    # Bulk preload latest EnrichmentResult records in 1 query
+    enrich_map: Dict[uuid.UUID, Dict[str, Any]] = {}
+    if product_ids:
+        enrich_stmts = (
+            select(EnrichmentResult)
+            .where(EnrichmentResult.product_id.in_(product_ids))
+            .order_by(EnrichmentResult.created_at.desc())
+        )
+        enrich_results = session.exec(enrich_stmts).all()
+        for e in enrich_results:
+            if e.product_id not in enrich_map and e.generated_value:
+                try:
+                    enrich_map[e.product_id] = json.loads(e.generated_value)
+                except Exception:
+                    enrich_map[e.product_id] = {}
+
+    # Bulk preload ProductAttribute records in 1 query
+    attrs_map: Dict[uuid.UUID, List[ProductAttribute]] = {}
+    if product_ids:
+        attr_stmts = (
+            select(ProductAttribute)
+            .where(ProductAttribute.product_id.in_(product_ids))
+        )
+        all_attrs = session.exec(attr_stmts).all()
+        for a in all_attrs:
+            if a.product_id not in attrs_map:
+                attrs_map[a.product_id] = []
+            attrs_map[a.product_id].append(a)
 
     delivery_rows = []
 
     for prod in products:
-        # 1. Fetch latest EnrichmentResult
-        enrich_stmt = (
-            select(EnrichmentResult)
-            .where(EnrichmentResult.product_id == prod.id)
-            .order_by(EnrichmentResult.created_at.desc())
-        )
-        enrichment = session.exec(enrich_stmt).first()
-        enrich_data: Dict[str, Any] = {}
-        if enrichment and enrichment.generated_value:
-            try:
-                enrich_data = json.loads(enrichment.generated_value)
-            except Exception:
-                enrich_data = {}
-
+        enrich_data = enrich_map.get(prod.id, {})
         existing_delivery = enrich_data.get("delivery_record")
         if existing_delivery and isinstance(existing_delivery, dict) and len(existing_delivery) >= 200:
             # Full 252 record already stored
             row = {col: existing_delivery.get(col, "") for col in UNILOG_252_HEADERS}
         else:
             # Synthesize from Product + Attributes
-            attrs = repo.get_attributes(prod.id)
+            attrs = attrs_map.get(prod.id, [])
             clean_brand_name = re.sub(r"[^A-Za-z0-9_]", "_", prod.brand.replace("®", "").replace("™", "").strip())
             sku_val = prod.sku or prod.model or ""
 
@@ -233,24 +307,85 @@ def export_products(
         delivery_rows.append(row)
 
     headers = UNILOG_252_HEADERS
+    fmt = format.lower().strip()
 
-    if format.lower() == "xlsx":
+    sku_tag = f"_{products[0].sku}" if (product_id and len(products) == 1 and products[0].sku) else ""
+
+    if fmt == "xlsx":
         from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
         wb = Workbook()
         ws = wb.active
-        ws.title = "Delivery Format"
+        ws.title = "Unilog 252 Delivery"
+        ws.views.sheetView[0].showGridLines = True
+
+        header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+        header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+        header_align = Alignment(horizontal="center", vertical="center", wrap_text=False)
+        thin_border = Border(
+            left=Side(style='thin', color='CBD5E1'),
+            right=Side(style='thin', color='CBD5E1'),
+            top=Side(style='thin', color='CBD5E1'),
+            bottom=Side(style='thin', color='CBD5E1')
+        )
+
         ws.append(headers)
+        ws.row_dimensions[1].height = 24
+
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_align
+            cell.border = thin_border
+
+        data_font = Font(name="Calibri", size=9.5)
+        data_align = Alignment(vertical="center")
+
         for row in delivery_rows:
-            ws.append([str(row.get(h, "") or "") for h in headers])
+            row_data = [str(row.get(h, "") or "") for h in headers]
+            ws.append(row_data)
+
+        # Auto-adjust column widths
+        for col_idx, h in enumerate(headers, start=1):
+            col_letter = get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = max(len(h) + 2, 11)
 
         output = io_module.BytesIO()
         wb.save(output)
         output.seek(0)
 
+        filename = f"Unilog_Delivery{sku_tag}_Format_252_Columns.xlsx"
         return StreamingResponse(
             output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=Unilog_Delivery_Format_252_Columns.xlsx"},
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    elif fmt == "pdf":
+        from app.services.pdf_export import build_catalog_pdf
+        pdf_bytes = build_catalog_pdf(products, session, delivery_rows)
+        filename = f"Unilog_Delivery{sku_tag}_Catalog_Report.pdf"
+        return StreamingResponse(
+            io_module.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    elif fmt == "json":
+        json_bytes = json.dumps({
+            "export_standard": "Unilog 252-Column Master Delivery Format",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "total_products": len(delivery_rows),
+            "columns_count": len(headers),
+            "columns": headers,
+            "records": delivery_rows,
+        }, indent=2).encode("utf-8")
+        filename = f"Unilog_Delivery{sku_tag}_Format_252_Columns.json"
+        return StreamingResponse(
+            io_module.BytesIO(json_bytes),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
     else:
         output = io_module.StringIO()
@@ -260,11 +395,13 @@ def export_products(
             writer.writerow(row)
 
         csv_bytes = output.getvalue().encode("utf-8")
+        filename = f"Unilog_Delivery{sku_tag}_Format_252_Columns.csv"
         return StreamingResponse(
             io_module.BytesIO(csv_bytes),
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=Unilog_Delivery_Format_252_Columns.csv"},
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
+
 
 
 @router.get("/{product_id}", response_model=Product)

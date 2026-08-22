@@ -15,6 +15,7 @@ import {
   RefreshCw,
   ExternalLink,
 } from 'lucide-react';
+import { apiUrl } from '../../lib/api';
 
 export interface SourceClaim {
   source_id: string;
@@ -100,8 +101,8 @@ export const MultiSourceReconciliationPanel: React.FC<MultiSourceReconciliationP
       setError(null);
 
       const [recRes, srcRes] = await Promise.all([
-        fetch(`/api/v1/products/${productId}/reconciliation`),
-        fetch(`/api/v1/products/${productId}/sources`),
+        fetch(apiUrl(`/api/v1/products/${productId}/reconciliation`)),
+        fetch(apiUrl(`/api/v1/products/${productId}/sources`)),
       ]);
 
       if (!recRes.ok) {

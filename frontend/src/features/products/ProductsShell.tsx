@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
   Database,
@@ -6,12 +6,18 @@ import {
   Layers,
   Sparkles,
   FileText,
+  FileSpreadsheet,
+  FileCode,
   ShieldCheck,
   ArrowLeft,
   ChevronRight,
+  ChevronDown,
   Download,
   AlertTriangle,
-  ArrowRight
+  ArrowRight,
+  Trash2,
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import { ConfidenceBadge } from '../../components/ui/ConfidenceBadge';
@@ -20,6 +26,7 @@ import { EnrichmentPanel } from './EnrichmentPanel';
 import { ValidationPanel } from './ValidationPanel';
 import { MultiSourceReconciliationPanel } from './MultiSourceReconciliationPanel';
 import { formatAttrValueAndUnit } from '../../lib/formatters';
+import { apiUrl } from '../../lib/api';
 
 interface ProductItem {
   id: string;
@@ -70,6 +77,13 @@ export const ProductsShell: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedAttrId, setSelectedAttrId] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState<boolean>(false);
+  const [exportingFormat, setExportingFormat] = useState<string | null>(null);
+  const [exportDropdownOpen, setExportDropdownOpen] = useState<boolean>(false);
+  const [detailExportDropdownOpen, setDetailExportDropdownOpen] = useState<boolean>(false);
+  const [clearingCatalog, setClearingCatalog] = useState<boolean>(false);
+
+  const exportDropdownRef = useRef<HTMLDivElement>(null);
+  const detailExportDropdownRef = useRef<HTMLDivElement>(null);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -83,10 +97,25 @@ export const ProductsShell: React.FC = () => {
     fetchProducts();
   }, []);
 
+  // Handle click outside of export dropdowns
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (exportDropdownRef.current && !exportDropdownRef.current.contains(event.target as Node)) {
+        setExportDropdownOpen(false);
+      }
+      if (detailExportDropdownRef.current && !detailExportDropdownRef.current.contains(event.target as Node)) {
+        setDetailExportDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   const fetchProducts = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/v1/products');
+      const res = await fetch(apiUrl('/api/v1/products?limit=10000'));
       if (res.ok) {
         const data: ProductItem[] = await res.json();
         setProducts(data);
@@ -103,6 +132,25 @@ export const ProductsShell: React.FC = () => {
     }
   };
 
+  const handleClearAllProducts = async () => {
+    if (!window.confirm("Are you sure you want to reset the catalog? This will remove all products, extracted attributes, and validation records.")) {
+      return;
+    }
+    try {
+      setClearingCatalog(true);
+      const res = await fetch(apiUrl('/api/v1/products/clear-all'), { method: 'DELETE' });
+      if (res.ok) {
+        setSelectedProduct(null);
+        setSearchParams({});
+        await fetchProducts();
+      }
+    } catch (err) {
+      console.error('Failed to clear catalog:', err);
+    } finally {
+      setClearingCatalog(false);
+    }
+  };
+
   const selectProduct = async (prod: ProductItem) => {
     setSelectedProduct(prod);
     setSelectedAttrId(null);
@@ -110,10 +158,10 @@ export const ProductsShell: React.FC = () => {
 
     try {
       const [attrRes, evidRes, valRes, enrichRes] = await Promise.all([
-        fetch(`/api/v1/products/${prod.id}/attributes`),
-        fetch(`/api/v1/products/${prod.id}/evidence`),
-        fetch(`/api/v1/products/${prod.id}/validation`),
-        fetch(`/api/v1/products/${prod.id}/enrichment`),
+        fetch(apiUrl(`/api/v1/products/${prod.id}/attributes`)),
+        fetch(apiUrl(`/api/v1/products/${prod.id}/evidence`)),
+        fetch(apiUrl(`/api/v1/products/${prod.id}/validation`)),
+        fetch(apiUrl(`/api/v1/products/${prod.id}/enrichment`)),
       ]);
 
       if (attrRes.ok) setAttributes(await attrRes.json());
@@ -137,7 +185,7 @@ export const ProductsShell: React.FC = () => {
   const handleRerunValidation = async () => {
     if (!selectedProduct) return;
     try {
-      const res = await fetch(`/api/v1/products/${selectedProduct.id}/validate`, { method: 'POST' });
+      const res = await fetch(apiUrl(`/api/v1/products/${selectedProduct.id}/validate`), { method: 'POST' });
       if (res.ok) selectProduct(selectedProduct);
     } catch (err) {
       console.error('Failed to rerun validation:', err);
@@ -147,28 +195,46 @@ export const ProductsShell: React.FC = () => {
   const handleRerunEnrichment = async () => {
     if (!selectedProduct) return;
     try {
-      const res = await fetch(`/api/v1/products/${selectedProduct.id}/enrich`, { method: 'POST' });
+      const res = await fetch(apiUrl(`/api/v1/products/${selectedProduct.id}/enrich`), { method: 'POST' });
       if (res.ok) selectProduct(selectedProduct);
     } catch (err) {
       console.error('Failed to rerun enrichment:', err);
     }
   };
 
-  const handleExportCatalog = async (format: string = 'xlsx') => {
+  const handleExportCatalog = async (format: 'xlsx' | 'csv' | 'pdf' | 'json', targetProductId?: string) => {
+    setExportingFormat(format);
     setExportLoading(true);
     try {
       const params = new URLSearchParams();
       params.append('format', format);
-      if (statusFilter !== 'all') params.append('status', statusFilter);
-      if (categoryFilter !== 'all') params.append('category', categoryFilter);
+      if (targetProductId) {
+        params.append('product_id', targetProductId);
+      } else {
+        if (statusFilter !== 'all') params.append('status', statusFilter);
+        if (categoryFilter !== 'all') params.append('category', categoryFilter);
+      }
 
-      const res = await fetch(`/api/v1/products/export?${params.toString()}`);
+      const res = await fetch(apiUrl(`/api/v1/products/export?${params.toString()}`));
       if (res.ok) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = format === 'xlsx' ? 'CatalogIQ_Export.xlsx' : 'CatalogIQ_Export.csv';
+
+        // Determine filename
+        let downloadName = '';
+        const disposition = res.headers.get('Content-Disposition');
+        if (disposition && disposition.includes('filename=')) {
+          downloadName = disposition.split('filename=')[1].replace(/["']/g, '').trim();
+        }
+        if (!downloadName) {
+          const skuSuffix = targetProductId && selectedProduct ? `_${selectedProduct.sku}` : '';
+          const extMap: Record<string, string> = { xlsx: 'xlsx', csv: 'csv', pdf: 'pdf', json: 'json' };
+          downloadName = `Unilog_Delivery${skuSuffix}_Format_252_Columns.${extMap[format] || format}`;
+        }
+
+        link.download = downloadName;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -178,6 +244,9 @@ export const ProductsShell: React.FC = () => {
       console.error('Failed to export catalog:', err);
     } finally {
       setExportLoading(false);
+      setExportingFormat(null);
+      setExportDropdownOpen(false);
+      setDetailExportDropdownOpen(false);
     }
   };
 
@@ -220,8 +289,8 @@ export const ProductsShell: React.FC = () => {
 
     return (
       <div className="space-y-8 text-foreground rounded-none">
-        {/* Navigation Breadcrumb & Back button */}
-        <div className="flex items-center justify-between">
+        {/* Navigation Breadcrumb & Actions Bar */}
+        <div className="flex items-center justify-between flex-wrap gap-4">
           <button
             onClick={clearSelection}
             className="inline-flex items-center gap-2 text-xs uppercase tracking-widest font-light text-muted-foreground hover:text-foreground transition"
@@ -230,14 +299,103 @@ export const ProductsShell: React.FC = () => {
             <span>Back to Product Catalog</span>
           </button>
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => handleExportCatalog('csv')}
-              className="h-9 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition rounded-none inline-flex items-center gap-1.5"
-            >
-              <Download className="w-3.5 h-3.5 text-[#9B8F77]" />
-              Export CSV
-            </button>
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Unified Export Menu for Product */}
+            <div className="relative" ref={detailExportDropdownRef}>
+              <button
+                onClick={() => setDetailExportDropdownOpen(!detailExportDropdownOpen)}
+                disabled={exportLoading}
+                className="h-9 px-4 border border-border bg-card text-foreground hover:bg-accent/40 text-[10px] uppercase tracking-widest font-semibold transition rounded-none inline-flex items-center gap-2 disabled:opacity-40"
+              >
+                {exportLoading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#9B8F77]" />
+                ) : (
+                  <Download className="w-3.5 h-3.5 text-[#9B8F77]" />
+                )}
+                <span>Export Dossier</span>
+                <ChevronDown className="w-3 h-3 text-muted-foreground" />
+              </button>
+
+              {detailExportDropdownOpen && (
+                <div className="absolute right-0 mt-1 w-72 border border-border bg-card shadow-2xl z-50 rounded-none divide-y divide-border animate-in fade-in slide-in-from-top-1 duration-150">
+                  <div className="p-3 bg-background/50">
+                    <div className="text-[9px] font-mono uppercase tracking-widest text-[#9B8F77]">
+                      Export Product Dossier
+                    </div>
+                    <div className="text-[11px] text-foreground font-serif">
+                      SKU: {selectedProduct.sku}
+                    </div>
+                  </div>
+
+                  <div className="p-1 space-y-0.5">
+                    <button
+                      onClick={() => handleExportCatalog('pdf', selectedProduct.id)}
+                      className="w-full px-3 py-2.5 flex items-start gap-3 hover:bg-accent text-left transition rounded-none group"
+                    >
+                      <FileText className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-foreground flex items-center justify-between">
+                          <span>PDF Spec Sheet</span>
+                          <span className="text-[9px] font-mono px-1.5 py-0.2 border border-border bg-background text-red-500">PDF</span>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground font-light">
+                          Executive formatted product intelligence dossier
+                        </div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => handleExportCatalog('xlsx', selectedProduct.id)}
+                      className="w-full px-3 py-2.5 flex items-start gap-3 hover:bg-accent text-left transition rounded-none group"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-foreground flex items-center justify-between">
+                          <span>Excel Workbook</span>
+                          <span className="text-[9px] font-mono px-1.5 py-0.2 border border-border bg-background text-emerald-500">XLSX</span>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground font-light">
+                          252-Column Unilog standard master row
+                        </div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => handleExportCatalog('csv', selectedProduct.id)}
+                      className="w-full px-3 py-2.5 flex items-start gap-3 hover:bg-accent text-left transition rounded-none group"
+                    >
+                      <FileText className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-foreground flex items-center justify-between">
+                          <span>CSV Delivery Document</span>
+                          <span className="text-[9px] font-mono px-1.5 py-0.2 border border-border bg-background text-blue-500">CSV</span>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground font-light">
+                          Standard comma-separated delivery dataset
+                        </div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => handleExportCatalog('json', selectedProduct.id)}
+                      className="w-full px-3 py-2.5 flex items-start gap-3 hover:bg-accent text-left transition rounded-none group"
+                    >
+                      <FileCode className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-foreground flex items-center justify-between">
+                          <span>JSON Payload</span>
+                          <span className="text-[9px] font-mono px-1.5 py-0.2 border border-border bg-background text-amber-500">JSON</span>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground font-light">
+                          Structured machine-readable normalized record
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <button
               onClick={handleRerunValidation}
               className="h-9 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition rounded-none"
@@ -539,24 +697,123 @@ export const ProductsShell: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3 self-start sm:self-auto">
-          {/* Export Buttons */}
+        <div className="flex items-center gap-3 self-start sm:self-auto flex-wrap">
+          {/* Consolidated Unified Export Hub Dropdown */}
+          <div className="relative" ref={exportDropdownRef}>
+            <button
+              onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
+              disabled={exportLoading || products.length === 0}
+              className="h-10 px-4 border border-border bg-card text-foreground hover:bg-accent/40 text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2 disabled:opacity-40"
+              title="Export product catalog in standard formats"
+            >
+              {exportLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#9B8F77]" />
+              ) : (
+                <Download className="w-3.5 h-3.5 text-[#9B8F77]" />
+              )}
+              <span>{exportLoading ? `Exporting ${exportingFormat?.toUpperCase()}...` : 'Export Catalog'}</span>
+              <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform duration-150 ${exportDropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {exportDropdownOpen && (
+              <div className="absolute right-0 mt-1 w-80 border border-border bg-card shadow-2xl z-50 rounded-none divide-y divide-border animate-in fade-in slide-in-from-top-1 duration-150">
+                <div className="p-3 bg-background/50 flex items-center justify-between">
+                  <div className="text-[9px] font-mono uppercase tracking-widest text-[#9B8F77]">
+                    Unilog Master Delivery Export
+                  </div>
+                  <span className="text-[9px] font-mono text-muted-foreground">
+                    252 Columns
+                  </span>
+                </div>
+
+                <div className="p-1.5 space-y-0.5">
+                  <button
+                    onClick={() => handleExportCatalog('xlsx')}
+                    className="w-full px-3 py-2.5 flex items-start gap-3 hover:bg-accent text-left transition rounded-none group"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-foreground flex items-center justify-between">
+                        <span>Excel Spreadsheet</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.2 border border-border bg-background text-emerald-500">.XLSX</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-light">
+                        Formatted workbook with 252 delivery headers
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => handleExportCatalog('csv')}
+                    className="w-full px-3 py-2.5 flex items-start gap-3 hover:bg-accent text-left transition rounded-none group"
+                  >
+                    <FileText className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-foreground flex items-center justify-between">
+                        <span>CSV Delivery File</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.2 border border-border bg-background text-blue-500">.CSV</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-light">
+                        Standard comma-separated values client format
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => handleExportCatalog('pdf')}
+                    className="w-full px-3 py-2.5 flex items-start gap-3 hover:bg-accent text-left transition rounded-none group"
+                  >
+                    <FileText className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-foreground flex items-center justify-between">
+                        <span>PDF Executive Report</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.2 border border-border bg-background text-red-500">.PDF</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-light">
+                        Executive catalog dossier with KPIs and spec cards
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => handleExportCatalog('json')}
+                    className="w-full px-3 py-2.5 flex items-start gap-3 hover:bg-accent text-left transition rounded-none group"
+                  >
+                    <FileCode className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-foreground flex items-center justify-between">
+                        <span>JSON Master Dataset</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.2 border border-border bg-background text-amber-500">.JSON</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-light">
+                        Full machine-readable catalog with metadata
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <button
-            onClick={() => handleExportCatalog('xlsx')}
-            disabled={exportLoading || products.length === 0}
-            className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition duration-150 rounded-none inline-flex items-center gap-2 disabled:opacity-40"
+            onClick={fetchProducts}
+            className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition duration-150 rounded-none inline-flex items-center gap-1.5"
+            title="Refresh product list"
           >
-            <Download className="w-3.5 h-3.5 text-[#9B8F77]" />
-            <span>Export Excel</span>
+            <RefreshCw className={`w-3.5 h-3.5 text-[#9B8F77] ${loading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
           </button>
+
           <button
-            onClick={() => handleExportCatalog('csv')}
-            disabled={exportLoading || products.length === 0}
-            className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition duration-150 rounded-none inline-flex items-center gap-2 disabled:opacity-40"
+            onClick={handleClearAllProducts}
+            disabled={clearingCatalog || products.length === 0}
+            className="h-10 px-4 border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive hover:text-destructive-foreground text-[10px] uppercase tracking-widest font-medium transition duration-150 rounded-none inline-flex items-center gap-1.5 disabled:opacity-40"
+            title="Reset catalog and clear all products"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export CSV</span>
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>{clearingCatalog ? 'Resetting...' : 'Reset Catalog'}</span>
           </button>
+
           <Link
             to="/upload"
             className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2"
@@ -582,7 +839,11 @@ export const ProductsShell: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="px-3 py-2 border border-border bg-background font-mono text-[10px] text-muted-foreground whitespace-nowrap">
+            Showing <strong className="text-foreground">{filteredProducts.length}</strong> of <strong className="text-foreground">{products.length}</strong> Products
+          </div>
+
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}

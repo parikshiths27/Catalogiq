@@ -96,6 +96,8 @@ class CatalogHealthResponse(BaseModel):
     worst_products: List[ProductAttentionItemSchema]
 
 
+@router.get("", status_code=status.HTTP_200_OK)
+@router.get("/", status_code=status.HTTP_200_OK)
 @router.get("/live", status_code=status.HTTP_200_OK)
 def check_live() -> Dict[str, str]:
     """
@@ -134,7 +136,11 @@ def check_ready(session: Session = Depends(get_session)) -> Dict[str, Any]:
 
     # 3. Verify Qdrant
     try:
-        qdrant_client = QdrantClient(url=settings.QDRANT_URL, timeout=2.0)
+        qdrant_client = QdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY,
+            timeout=2.0,
+        )
         # Attempt to list collections as a connectivity ping
         qdrant_client.get_collections()
         qdrant_status = "healthy"

@@ -698,6 +698,17 @@ class ExtractionStage(PipelineStage):
                         continue
                     row_dict = {h: str(v).strip() for h, v in zip(raw_headers, row_vals) if h}
 
+                    # Ensure row contains a recognizable product identifier or description
+                    has_identifier = any(
+                        bool(row_dict.get(k, "").strip())
+                        for k in [
+                            "Mfg_Part_Num", "SKU", "Part Number", "Part_Number", "MPN",
+                            "Part_Desc", "Product Name", "Product_Name", "Description", "Item", "Title"
+                        ]
+                    )
+                    if not has_identifier and not any(len(str(v).strip()) > 3 for v in row_vals):
+                        continue
+
                     enrich_res = enrichment_pipe.process_row(row_dict)
 
                     canonical_mpn = (
@@ -1183,22 +1194,6 @@ class ExtractionStage(PipelineStage):
             "keywords": result.keywords or [],
             "attributes": {},
         }
-
-    def _complete_step_and_job(
-        self, session: Session, step: ProcessingStep, job: ProcessingJob
-    ) -> None:
-        """Completes the extraction step and keeps the job in processing state for downstream stages."""
-        now = datetime.now(timezone.utc)
-        step.status = StepStatus.completed
-        step.completed_at = now
-        step.updated_at = now
-
-        job.status = JobStatus.processing
-        job.updated_at = now
-
-        session.add(step)
-        session.add(job)
-        session.commit()
 
     def _get_or_create_source(self, session: Session, document: Document) -> Source:
         """Get or create a Source record representing this document as provenance."""

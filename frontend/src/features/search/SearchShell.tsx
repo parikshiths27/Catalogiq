@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import { ConfidenceBadge } from '../../components/ui/ConfidenceBadge';
+import { apiUrl } from '../../lib/api';
 
 interface AttributeItem {
   attribute_name: string;
@@ -112,8 +113,8 @@ export const SearchShell: React.FC = () => {
 
     try {
       const [searchRes, facetRes] = await Promise.all([
-        fetch(`/api/v1/search?${params.toString()}`),
-        fetch(`/api/v1/search/facets?${params.toString()}`),
+        fetch(apiUrl(`/api/v1/search?${params.toString()}`)),
+        fetch(apiUrl(`/api/v1/search/facets?${params.toString()}`)),
       ]);
 
       if (!searchRes.ok) throw new Error(`Search failed: HTTP ${searchRes.status}`);

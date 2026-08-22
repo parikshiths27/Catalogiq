@@ -22,11 +22,14 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Configure CORS for local development (can be locked down in production via settings)
+# Configure CORS dynamically for local development and production environments
+cors_origins = settings.cors_origins_list
+allow_credentials = False if "*" in cors_origins else True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

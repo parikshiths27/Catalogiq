@@ -112,16 +112,23 @@ def test_exact_product_name_boost(session: Session):
     assert res.results[0].hybrid_score >= 0.60
 
 
+class MockVectorQdrantService(QdrantService):
+    def __init__(self, target_product_id: uuid.UUID, score: float = 0.85):
+        self.target_product_id = target_product_id
+        self.score = score
+
+    def search_vectors(self, *args, **kwargs):
+        return [{"id": str(self.target_product_id), "score": self.score}]
+
+
 def test_product_present_in_both_engines(session: Session):
     """7, 10, 11. Test score fusion for product present in both keyword and vector candidate sets."""
     p = Product(sku="DUAL-001", brand="Schneider", product_name="Altivar Soft Starter 11kW", category="Starters", quality_score=88.0)
     session.add(p)
     session.commit()
 
-    indexer = IndexingService(session, embedding_provider=MockEmbeddingProvider())
-    indexer.index_product(p.id)
-
-    service = HybridSearchService(session)
+    qdrant_mock = MockVectorQdrantService(p.id, score=0.85)
+    service = HybridSearchService(session, qdrant_service=qdrant_mock)
     res = service.search_hybrid("Altivar Soft Starter 11kW")
 
     assert res.total == 1
@@ -144,15 +151,6 @@ def test_keyword_only_product(session: Session):
     assert res.total == 1
     assert res.results[0].match_type == "exact"  # Exact SKU takes precedence over keyword match_type
     assert res.results[0].keyword_score == 1.0
-
-
-class MockVectorQdrantService(QdrantService):
-    def __init__(self, target_product_id: uuid.UUID, score: float = 0.85):
-        self.target_product_id = target_product_id
-        self.score = score
-
-    def search_vectors(self, *args, **kwargs):
-        return [{"id": str(self.target_product_id), "score": self.score}]
 
 
 def test_semantic_only_product(session: Session):

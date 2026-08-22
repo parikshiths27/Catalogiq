@@ -73,7 +73,7 @@ def _update_batch_progress_if_needed(session: Session, document: Optional[Docume
         if document.status == DocumentStatus.failed or (linked_job and linked_job.status == JobStatus.failed):
             item.status = BatchItemStatus.failed
             item.error_message = error_message or (linked_job.error_message if linked_job else "Document processing failed")
-        elif document.status == DocumentStatus.processed and (not linked_job or linked_job.status == JobStatus.completed):
+        elif document.status == DocumentStatus.processed:
             item.status = BatchItemStatus.completed
             item.error_message = None
             if not item.completed_at:

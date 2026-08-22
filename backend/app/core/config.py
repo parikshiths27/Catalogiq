@@ -23,6 +23,8 @@ class Settings(BaseSettings):
         if "ENV_FILE_PATH" in os.environ and "_env_file" not in kwargs:
             kwargs["_env_file"] = os.environ["ENV_FILE_PATH"]
         super().__init__(*args, **kwargs)
+        if self.DATABASE_URL and self.DATABASE_URL.startswith("postgres://"):
+            self.DATABASE_URL = self.DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
     APP_NAME: str = "CatalogIQ"
     ENV: str = "development"
@@ -31,6 +33,22 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/catalogiq"
     REDIS_URL: str = "redis://localhost:6379/0"
     QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: Optional[str] = None
+
+    # --- CORS Configuration ---
+    # Comma-separated allowed frontend origins or "*" for open access
+    CORS_ORIGINS: str = "*"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        if not self.CORS_ORIGINS or self.CORS_ORIGINS.strip() == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    def __setattr__(self, name, value):
+        if name == "DATABASE_URL" and isinstance(value, str) and value.startswith("postgres://"):
+            value = value.replace("postgres://", "postgresql://", 1)
+        super().__setattr__(name, value)
 
     STORAGE_PROVIDER: str = "local"
     LOCAL_STORAGE_DIR: str = str(_BACKEND_DIR / "storage")

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { ConfidenceBadge } from '../../components/ui/ConfidenceBadge';
 import { StatusBadge } from '../../components/ui/StatusBadge';
+import { apiUrl } from '../../lib/api';
 
 export interface OverallHealth {
   quality_score: number;
@@ -95,7 +96,7 @@ export const HealthShell: React.FC = () => {
   const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<CatalogHealthResponse>({
     queryKey: ['catalogHealth'],
     queryFn: async () => {
-      const res = await fetch('/api/v1/health/catalog');
+      const res = await fetch(apiUrl('/api/v1/health/catalog'));
       if (!res.ok) {
         throw new Error(`Failed to fetch catalog health: ${res.statusText}`);
       }

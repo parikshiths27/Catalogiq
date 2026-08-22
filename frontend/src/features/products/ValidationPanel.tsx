@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ShieldCheck, CheckCircle2, Loader2, AlertTriangle, ArrowRight, Info } from 'lucide-react';
+import { apiUrl } from '../../lib/api';
 
 interface ValidationIssue {
   id?: string;
@@ -70,7 +71,7 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({
   const handleResolve = async (issueId: string, resolution: string, value?: any) => {
     try {
       setResolvingId(issueId);
-      const res = await fetch(`/api/v1/products/${productId}/validation/${issueId}/resolve`, {
+      const res = await fetch(apiUrl(`/api/v1/products/${productId}/validation/${issueId}/resolve`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
