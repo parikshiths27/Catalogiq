@@ -166,11 +166,116 @@ class MockProvider(BaseLLMProvider):
         context: Any = None,
     ) -> Dict[str, Any]:
         """
-        Mock assistant response for automated tests.
+        Mock assistant response for automated tests and grounded operational guidance.
         """
         msg_lower = (message or "").lower()
-        page_ctx = (context or {}).get("page", "") if isinstance(context, dict) else ""
+        ctx = context if isinstance(context, dict) else {}
+        page_ctx = ctx.get("page", "")
 
+        # 1. Product search not found
+        product_search = ctx.get("product_search")
+        if product_search and product_search.get("found") is False:
+            queried_id = product_search.get("queried_identifier", "the requested product")
+            return {
+                "message": f"Product '{queried_id}' could not be found in the current CatalogIQ catalog database.",
+                "suggestions": [
+                    "Search for another SKU or part number",
+                    "How do I upload a new catalog document?",
+                    "What file formats are supported?",
+                ],
+            }
+
+        # 2. Product-specific queries with retrieved product_facts
+        product_facts = ctx.get("product_facts")
+        if product_facts:
+            sku = product_facts.get("sku", "Unknown SKU")
+            name = product_facts.get("product_name", sku)
+            brand = product_facts.get("brand", "Unknown Brand")
+            status = product_facts.get("status", "unknown")
+            quality_score = product_facts.get("quality_score", 0.0)
+            open_issues = product_facts.get("open_validation_issues", [])
+            attributes = product_facts.get("attributes", [])
+
+            # A. Questions asking why product requires review or is in needs_review status
+            if "review" in msg_lower or "needs_review" in msg_lower or "why" in msg_lower:
+                issue_bullets = []
+                for idx, issue in enumerate(open_issues, 1):
+                    msg = issue.get("message", issue.get("validation_type", "Validation issue"))
+                    sev = issue.get("severity", "warning").upper()
+                    issue_bullets.append(f"{idx}. **[{sev}]**: {msg}")
+
+                if not issue_bullets:
+                    issue_bullets.append("1. Product status is marked for quality verification before catalog publication.")
+
+                issues_text = "\n".join(issue_bullets)
+                return {
+                    "message": (
+                        f"Product **{name}** (SKU: `{sku}`, Brand: {brand}) has a quality score of **{quality_score:.1f}%** "
+                        f"and status `{status}`. It requires human review due to the following open validation issues:\n\n"
+                        f"{issues_text}\n\n"
+                        f"Reviewers can verify or override these values in the **Human Review Queue** (`/reviews`)."
+                    ),
+                    "suggestions": [
+                        f"Where did the attributes for {sku} come from?",
+                        "How do I resolve validation issues in Human Review?",
+                        "What is the quality score threshold for verification?",
+                    ],
+                }
+
+            # B. Questions asking about attribute evidence / provenance
+            if "where" in msg_lower or "evidence" in msg_lower or "source" in msg_lower or "attribute" in msg_lower or "diameter" in msg_lower:
+                # Find matching attribute
+                matched_attr = None
+                for attr in attributes:
+                    a_name = (attr.get("name") or "").lower()
+                    a_disp = (attr.get("display_name") or "").lower()
+                    if any(term in msg_lower for term in [a_name, a_disp]) and (a_name or a_disp):
+                        matched_attr = attr
+                        break
+                if not matched_attr and attributes:
+                    matched_attr = attributes[0]
+
+                if matched_attr:
+                    aname = matched_attr.get("display_name") or matched_attr.get("name")
+                    val = matched_attr.get("raw_value")
+                    ev = matched_attr.get("evidence") or {}
+                    src_name = ev.get("source_name", "Catalog Document")
+                    page_num = ev.get("page_number", 1)
+                    ev_text = ev.get("evidence_text", f"{aname}: {val}")
+                    conf = matched_attr.get("confidence", 0.95)
+
+                    return {
+                        "message": (
+                            f"The **{aname}** attribute for **{name}** (`{val}`) was extracted from **{src_name}** "
+                            f"(Page {page_num}) with **{conf * 100:.0f}% confidence**.\n\n"
+                            f"**Source Document Evidence Quote**:\n"
+                            f"> \"{ev_text}\""
+                        ),
+                        "suggestions": [
+                            f"Why would product {sku} require human review?",
+                            f"What other attributes were extracted for {sku}?",
+                            "How does CatalogIQ verify evidence citations?",
+                        ],
+                    }
+
+        # 3. Multi-source reconciliation questions
+        if "reconcil" in msg_lower or "conflict" in msg_lower or "claim" in msg_lower:
+            return {
+                "message": (
+                    "CatalogIQ reconciles conflicting manufacturer claims through an automated multi-source pipeline:\n\n"
+                    "1. **Multi-Source Ingestion**: Ingests multiple technical documents, spec sheets, and distributor catalogs per product.\n"
+                    "2. **Weighted Trust Hierarchy**: Applies higher confidence weighting to primary OEM manufacturer datasheets over distributor catalogs and secondary web sources.\n"
+                    "3. **Verbatim Evidence Grounding**: Extracts bounding text citations and page numbers for every attribute claim.\n"
+                    "4. **Conflict Detection & Human Review**: When sources provide contradictory values (e.g. differing voltages or dimensions), CatalogIQ records both competing claims, marks the product `needs_review`, and routes the discrepancy to the **Human Review Queue** (`/reviews`) for expert resolution."
+                ),
+                "suggestions": [
+                    "What does needs_review mean?",
+                    "How do I resolve a cross-source conflict in Human Review?",
+                    "What happens when I upload a new catalog version?",
+                ],
+            }
+
+        # 4. Upload & Ingestion questions
         if "upload" in msg_lower or page_ctx == "upload":
             return {
                 "message": (
@@ -186,6 +291,7 @@ class MockProvider(BaseLLMProvider):
                 ],
             }
 
+        # 5. Search questions
         if "search" in msg_lower or page_ctx == "search":
             return {
                 "message": (
@@ -204,7 +310,8 @@ class MockProvider(BaseLLMProvider):
         return {
             "message": (
                 "CatalogIQ is an AI-powered Product Intelligence and Enrichment platform. "
-                "I can help you understand multi-format document processing, batch ingestion, extraction, validation quality scores, product content enrichment, and hybrid search."
+                "I can help you understand multi-format document processing, batch ingestion, attribute extraction, "
+                "validation quality scores, product content enrichment, multi-source reconciliation, and hybrid search."
             ),
             "suggestions": [
                 "What file formats are supported?",

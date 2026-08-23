@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlmodel import Session, select, func
-from sqlalchemy import or_, and_, desc, asc
+from sqlalchemy import or_, and_, desc, asc, distinct, case
 
 from app.db.session import get_session
 from app.models import (
@@ -135,26 +135,96 @@ def list_reviews(
     """
     Read-only endpoint returning structured review and validation records for human review workspace.
     """
+    from sqlalchemy import case
+
     # 1. Base query for ValidationResult
-    query = select(ValidationResult)
+    base_query = select(ValidationResult)
 
     if status_filter != "all":
-        query = query.where(ValidationResult.status == status_filter)
+        base_query = base_query.where(ValidationResult.status == status_filter)
 
     if product_id:
         try:
             p_uuid = uuid.UUID(product_id)
-            query = query.where(ValidationResult.product_id == p_uuid)
+            base_query = base_query.where(ValidationResult.product_id == p_uuid)
         except ValueError:
             pass
 
     if severity:
-        query = query.where(ValidationResult.severity == severity)
+        base_query = base_query.where(ValidationResult.severity == severity)
 
-    # Execute fetch
-    val_results = session.exec(query.order_by(desc(ValidationResult.created_at))).all()
+    # 2. Issue type filtering at query level where possible
+    conflict_val_types = [
+        ValidationType.cross_attribute_conflict.value,
+        ValidationType.cross_source_conflict.value,
+        ValidationType.inconsistent_value.value,
+        "manufacturer_brand_conflict",
+        "duplicate_identity_conflict",
+        "conflicting_sources",
+    ]
+    low_conf_types = [
+        ValidationType.low_confidence.value,
+        ValidationType.unsupported_claim.value,
+        "missing_manufacturer_evidence",
+    ]
+    missing_types = [
+        ValidationType.missing_required_field.value,
+        ValidationType.missing_required_attribute.value,
+        "manufacturer_unresolved",
+        "brand_unresolved",
+        "taxonomy_unresolved",
+        "attribute_not_in_lov",
+        "unsupported_uom",
+    ]
 
-    # Pre-cache related Products, Attributes, Documents, Sources
+    if issue_type and issue_type != "all":
+        if issue_type == "cross_source_conflict":
+            base_query = base_query.where(ValidationResult.validation_type.in_(conflict_val_types))
+        elif issue_type == "low_confidence":
+            base_query = base_query.where(ValidationResult.validation_type.in_(low_conf_types))
+        elif issue_type == "missing_attribute":
+            base_query = base_query.where(ValidationResult.validation_type.in_(missing_types))
+        else:
+            base_query = base_query.where(ValidationResult.validation_type == issue_type)
+
+    # Search filter
+    if search:
+        s_pattern = f"%{search.strip()}%"
+        base_query = base_query.join(Product, Product.id == ValidationResult.product_id).where(
+            or_(
+                ValidationResult.message.ilike(s_pattern),
+                Product.product_name.ilike(s_pattern),
+                Product.sku.ilike(s_pattern),
+                Product.brand.ilike(s_pattern),
+            )
+        )
+
+    # Count total matching items
+    count_query = select(func.count(ValidationResult.id))
+    if status_filter != "all":
+        count_query = count_query.where(ValidationResult.status == status_filter)
+    if severity:
+        count_query = count_query.where(ValidationResult.severity == severity)
+    if product_id:
+        try:
+            count_query = count_query.where(ValidationResult.product_id == uuid.UUID(product_id))
+        except ValueError:
+            pass
+
+    total_items = session.exec(select(func.count()).select_from(base_query.subquery())).one() or 0
+
+    # Apply ordering
+    if sort_by == "oldest":
+        order_stmt = asc(ValidationResult.created_at)
+    else:
+        order_stmt = desc(ValidationResult.created_at)
+
+    # Fetch ONLY the paginated slice
+    val_results = session.exec(
+        base_query.order_by(order_stmt).offset((page - 1) * limit).limit(limit)
+    ).all()
+
+    # Pre-cache related Products, Attributes, Documents, Sources ONLY for paginated slice
     product_ids = {v.product_id for v in val_results}
     attribute_ids = {v.attribute_id for v in val_results if v.attribute_id}
 
@@ -202,19 +272,6 @@ def list_reviews(
 
         val_type_str = val.validation_type.value if hasattr(val.validation_type, "value") else str(val.validation_type)
         cat_type = classify_issue_category(val_type_str, attr_status_str, attr_confidence)
-
-        # Apply issue_type filter if specified
-        if issue_type and issue_type != "all" and cat_type != issue_type and val_type_str != issue_type:
-            continue
-
-        # Search term filter
-        if search:
-            s_lower = search.lower()
-            matches_prod = s_lower in prod.product_name.lower() or s_lower in prod.sku.lower() or s_lower in prod.brand.lower()
-            matches_attr = attr and (s_lower in attr.display_name.lower() or s_lower in attr.attribute_name.lower())
-            matches_msg = s_lower in val.message.lower()
-            if not (matches_prod or matches_attr or matches_msg):
-                continue
 
         # Build evidence items
         ev_items: List[EvidenceSummarySchema] = []
@@ -283,35 +340,26 @@ def list_reviews(
             )
         )
 
-    # 2. Calculate KPI summary counts
-    open_val_results = session.exec(
-        select(ValidationResult).where(ValidationResult.status == ValidationStatus.open)
-    ).all()
+    # 3. Calculate KPI summary counts via SQL Aggregation
+    kpi_row = session.exec(
+        select(
+            func.coalesce(func.sum(case((ValidationResult.status == ValidationStatus.open, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((ValidationResult.status == ValidationStatus.resolved, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(conflict_val_types)), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(low_conf_types)), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(missing_types)), 1), else_=0)), 0),
+        )
+    ).first()
 
-    resolved_count = session.exec(
-        select(func.count()).select_from(ValidationResult).where(ValidationResult.status == ValidationStatus.resolved)
-    ).one() or 0
-
-    total_open_issues = len(open_val_results)
-    cross_source_conflicts = 0
-    low_confidence_issues = 0
-    validation_issues = 0
-    missing_required_attributes = 0
-
-    for ov in open_val_results:
-        vt_str = ov.validation_type.value if hasattr(ov.validation_type, "value") else str(ov.validation_type)
-        cat = classify_issue_category(vt_str, None, None)
-        if cat == "cross_source_conflict":
-            cross_source_conflicts += 1
-        elif cat == "low_confidence":
-            low_confidence_issues += 1
-        elif cat == "missing_attribute":
-            missing_required_attributes += 1
-        else:
-            validation_issues += 1
+    total_open_issues = int(kpi_row[0] or 0)
+    resolved_count = int(kpi_row[1] or 0)
+    cross_source_conflicts = int(kpi_row[2] or 0)
+    low_confidence_issues = int(kpi_row[3] or 0)
+    missing_required_attributes = int(kpi_row[4] or 0)
+    validation_issues = max(0, total_open_issues - cross_source_conflicts - low_confidence_issues - missing_required_attributes)
 
     products_needing_review = session.exec(
-        select(func.count()).select_from(Product).where(Product.status == ProductStatus.needs_review)
+        select(func.count(distinct(ValidationResult.product_id))).where(ValidationResult.status == ValidationStatus.open)
     ).one() or 0
 
     summary_counts = ReviewSummaryCountsSchema(
@@ -324,26 +372,11 @@ def list_reviews(
         products_needing_review=products_needing_review,
     )
 
-    # 3. Sorting
-    if sort_by == "oldest":
-        review_items.sort(key=lambda x: x.created_at)
-    elif sort_by == "severity":
-        severity_map = {"critical": 4, "error": 3, "warning": 2, "info": 1}
-        review_items.sort(key=lambda x: severity_map.get(x.severity.lower(), 0), reverse=True)
-    elif sort_by == "confidence":
-        review_items.sort(key=lambda x: x.confidence if x.confidence is not None else 1.0)
-    else:  # newest
-        review_items.sort(key=lambda x: x.created_at, reverse=True)
-
-    # 4. Pagination
-    total_items = len(review_items)
-    total_pages = math.ceil(total_items / limit) if total_items > 0 else 1
-    start_idx = (page - 1) * limit
-    paginated_items = review_items[start_idx : start_idx + limit]
+    total_pages = max(1, math.ceil(total_items / limit))
 
     return ReviewsListResponse(
         summary=summary_counts,
-        items=paginated_items,
+        items=review_items,
         total_items=total_items,
         page=page,
         limit=limit,

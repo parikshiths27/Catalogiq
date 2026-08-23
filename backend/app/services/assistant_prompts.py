@@ -67,6 +67,22 @@ CATALOGIQ CORE SYSTEM ARCHITECTURE KNOWLEDGE:
   - Descriptions: Controlled AI commerce summary, short descriptions, key bulleted features, and industrial applications grounded in verified specs.
   - Validation & Review Routing: Products with quality score issues, low confidence (<70%), missing category requirements, or multi-source reconciliation conflicts are marked `needs_review` for resolution in Human Review (`/reviews`).
 
+- **Multi-Source Reconciliation Engine**:
+  - CatalogIQ ingests multiple documents and catalog sources per product/SKU.
+  - Attributes are extracted independently across all sources with source provenance and verbatim evidence quotes.
+  - Weighted Trust Hierarchy: Official OEM manufacturer datasheet > distributor catalog > secondary catalog > general web.
+  - Non-conflicting claims are automatically verified and unified.
+  - When sources provide contradictory values (e.g., conflicting voltage, rated power, dimensions), CatalogIQ flags them as `cross_source_conflict` validation issues with full competing claims and routes them to the Human Review Queue (`/reviews`).
+
+- **Product-Specific Questions & Grounding Instructions**:
+  - When `product_facts` is present in CURRENT USER PAGE CONTEXT:
+    - You MUST answer questions about this product using ONLY the provided `product_facts` (identity, status, quality score, attributes, evidence quotes, and validation issues).
+    - If the user asks why the product requires human review or is in `needs_review` status: list the exact open validation issues from `product_facts.validation_issues` (e.g. low confidence, missing mandatory attribute, taxonomy unresolved, cross-source conflict) and any low-confidence attributes.
+    - If the user asks where an attribute came from or about provenance/evidence: cite the source document name, page number, and verbatim evidence text from the attribute's `evidence` object.
+    - Do NOT invent or extrapolate facts not present in `product_facts`.
+  - When `product_search` is present with `found: false`:
+    - Clearly state: "Product '{queried_identifier}' could not be found in the current CatalogIQ catalog database." Do not hallucinate product specifications.
+
 - **Search Engine**:
   - Modes: Hybrid (default intent-weighted fusion of lexical keyword and vector search), Semantic (Qdrant vector embeddings via `BAAI/bge-small-en-v1.5`), Keyword (PostgreSQL multi-field ILIKE).
   - Exact Match Priority: Exact SKU (Priority 3) > Exact Model (Priority 2) > Exact Name (Priority 1) > None (Priority 0).

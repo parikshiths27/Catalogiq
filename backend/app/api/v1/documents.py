@@ -6,7 +6,7 @@ from sqlmodel import Session
 from pydantic import BaseModel
 
 from app.db.session import get_session
-from app.models import Document
+from app.models import Document, DocumentStatus
 from app.repositories import DocumentRepository
 from app.services.document import DocumentService
 from app.services.storage import get_storage_service
@@ -202,23 +202,79 @@ def get_parsed_document(
             detail=f"Document with ID {document_id} not found"
         )
     
-    if not doc.parsed_storage_key:
+    # 1. Check if parsed intermediate JSON is already stored durably in PostgreSQL metadata
+    if doc.metadata_json:
+        if isinstance(doc.metadata_json.get("intermediate_json"), dict):
+            return doc.metadata_json["intermediate_json"]
+        if isinstance(doc.metadata_json.get("parsed_content"), dict):
+            return doc.metadata_json["parsed_content"]
+
+    # 2. Check if the document was never parsed
+    if not doc.parsed_storage_key and doc.status != DocumentStatus.processed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Document has not been successfully parsed yet"
+            detail=f"Document status is '{doc.status}'. It has not been successfully parsed yet."
         )
 
-    # Download the structured intermediate representation from storage
+    # 3. Download the structured intermediate representation from storage
     storage = get_storage_service()
-    try:
-        file_bytes = storage.download_file(doc.parsed_storage_key)
-        parsed_data = json.loads(file_bytes.decode("utf-8"))
-        return parsed_data
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to load parsed document artifact: {str(e)}"
-        )
+    if doc.parsed_storage_key:
+        try:
+            file_bytes = storage.download_file(doc.parsed_storage_key)
+            parsed_data = json.loads(file_bytes.decode("utf-8"))
+            # Backfill durable database metadata for future queries
+            meta = dict(doc.metadata_json or {})
+            meta["intermediate_json"] = parsed_data
+            doc.metadata_json = meta
+            session.add(doc)
+            session.commit()
+            return parsed_data
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error reading parsed storage file for document {document_id}: {e}")
+
+    # 4. Check if raw source file is available to re-parse on-demand
+    if doc.storage_key:
+        try:
+            raw_bytes = storage.download_file(doc.storage_key)
+            import os
+            from app.services.parser import DoclingParser, ExcelParser, CSVParser, JSONParser, XMLParser, TextParser, HTMLParser
+            ext = os.path.splitext(doc.filename.lower())[1] if doc.filename else ".pdf"
+            
+            if ext in (".xlsx", ".xls"):
+                parser = ExcelParser()
+            elif ext in (".csv", ".tsv"):
+                parser = CSVParser()
+            elif ext == ".json":
+                parser = JSONParser()
+            elif ext in (".xml", ".xaml"):
+                parser = XMLParser()
+            elif ext in (".html", ".htm"):
+                parser = HTMLParser()
+            elif ext in (".txt", ".text", ".md", ".log"):
+                parser = TextParser()
+            else:
+                parser = DoclingParser()
+
+            parsed_data = parser.parse(raw_bytes, filename=doc.filename)
+            parsed_data["document_id"] = str(document_id)
+            parsed_data["parser"] = {"name": parser.__class__.__name__, "version": getattr(parser, "version", "1.0.0")}
+            
+            # Save durably to DB
+            meta = dict(doc.metadata_json or {})
+            meta["intermediate_json"] = parsed_data
+            doc.metadata_json = meta
+            session.add(doc)
+            session.commit()
+            return parsed_data
+        except Exception as e:
+            logger.warning(f"Failed to re-parse document on demand: {e}")
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Intermediate representation artifact not found for document {document_id}. The document may need to be reprocessed."
+    )
 @router.get("/{document_id}/extracted")
 def get_extracted_document(
     document_id: uuid.UUID,

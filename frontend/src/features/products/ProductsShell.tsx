@@ -115,7 +115,7 @@ export const ProductsShell: React.FC = () => {
   const fetchProducts = async () => {
     try {
       setLoading(true);
-      const res = await fetch(apiUrl('/api/v1/products?limit=10000'));
+      const res = await fetch(apiUrl('/api/v1/products?limit=250'));
       if (res.ok) {
         const data: ProductItem[] = await res.json();
         setProducts(data);
@@ -140,9 +140,8 @@ export const ProductsShell: React.FC = () => {
       setClearingCatalog(true);
       const res = await fetch(apiUrl('/api/v1/products/clear-all'), { method: 'DELETE' });
       if (res.ok) {
-        setSelectedProduct(null);
-        setSearchParams({});
-        await fetchProducts();
+        setProducts([]);
+        clearSelection();
       }
     } catch (err) {
       console.error('Failed to clear catalog:', err);
@@ -157,21 +156,35 @@ export const ProductsShell: React.FC = () => {
     setSearchParams({ product_id: prod.id });
 
     try {
-      const [attrRes, evidRes, valRes, enrichRes] = await Promise.all([
-        fetch(apiUrl(`/api/v1/products/${prod.id}/attributes`)),
-        fetch(apiUrl(`/api/v1/products/${prod.id}/evidence`)),
-        fetch(apiUrl(`/api/v1/products/${prod.id}/validation`)),
-        fetch(apiUrl(`/api/v1/products/${prod.id}/enrichment`)),
-      ]);
+      const res = await fetch(apiUrl(`/api/v1/products/${prod.id}/details`));
+      if (res.ok) {
+        const data = await res.json();
+        if (data.product) setSelectedProduct(data.product);
+        if (data.attributes) setAttributes(data.attributes);
+        if (data.evidence) setEvidenceList(data.evidence);
+        if (data.validation) {
+          setValidationIssues(data.validation.issues || []);
+          setValidationSummary(data.validation);
+        }
+        if (data.enrichment) setEnrichmentData(data.enrichment);
+      } else {
+        // Fallback for older endpoints
+        const [attrRes, evidRes, valRes, enrichRes] = await Promise.all([
+          fetch(apiUrl(`/api/v1/products/${prod.id}/attributes`)),
+          fetch(apiUrl(`/api/v1/products/${prod.id}/evidence`)),
+          fetch(apiUrl(`/api/v1/products/${prod.id}/validation`)),
+          fetch(apiUrl(`/api/v1/products/${prod.id}/enrichment`)),
+        ]);
 
-      if (attrRes.ok) setAttributes(await attrRes.json());
-      if (evidRes.ok) setEvidenceList(await evidRes.json());
-      if (valRes.ok) {
-        const valData = await valRes.json();
-        setValidationIssues(valData.issues || []);
-        setValidationSummary(valData);
+        if (attrRes.ok) setAttributes(await attrRes.json());
+        if (evidRes.ok) setEvidenceList(await evidRes.json());
+        if (valRes.ok) {
+          const valData = await valRes.json();
+          setValidationIssues(valData.issues || []);
+          setValidationSummary(valData);
+        }
+        if (enrichRes.ok) setEnrichmentData(await enrichRes.json());
       }
-      if (enrichRes.ok) setEnrichmentData(await enrichRes.json());
     } catch (err) {
       console.error('Failed to fetch product details:', err);
     }

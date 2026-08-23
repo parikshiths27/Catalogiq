@@ -404,6 +404,110 @@ def export_products(
 
 
 
+@router.get("/{product_id}/details")
+def get_product_complete_details(product_id: uuid.UUID, session: Session = Depends(get_session)):
+    """
+    Returns consolidated product details envelope in a single HTTP roundtrip:
+    - Product base info
+    - Attributes
+    - Evidence
+    - Validation summary
+    - Enrichment
+    """
+    repo = ProductRepository(session)
+    product = repo.get_by_id(product_id)
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Product with ID {product_id} not found",
+        )
+
+    attributes = repo.get_attributes(product_id)
+    attr_repo = AttributeRepository(session)
+    evidence = attr_repo.get_evidence_for_product(product_id)
+    validations = repo.get_validations(product_id)
+
+    # Calculate validation / completeness
+    evidence_names = {
+        a.attribute_name for a in attributes
+        if any(e.attribute_id == a.id and e.evidence_text for e in evidence)
+    }
+    engine = ValidationEngine()
+    val_res = engine.validate_product(
+        product=product,
+        attributes=attributes,
+        evidence_supported_attribute_names=evidence_names,
+    )
+    val_summary = {
+        "product_id": str(product_id),
+        "quality_score": product.quality_score,
+        "validation_status": product.status,
+        "completeness_score": val_res.completeness.completeness_score,
+        "completeness_details": val_res.completeness.model_dump(),
+        "quality_breakdown": val_res.quality_breakdown.model_dump(),
+        "issues": [v.model_dump() for v in validations],
+        "has_critical_issues": val_res.has_critical_issues,
+        "has_errors": val_res.has_errors,
+    }
+
+    # Enrichment
+    stmt = select(EnrichmentResult).where(
+        EnrichmentResult.product_id == product_id
+    ).order_by(EnrichmentResult.created_at.desc())
+    enrichment = session.exec(stmt).first()
+    gen_data = {}
+    if enrichment and enrichment.generated_value:
+        try:
+            gen_data = json.loads(enrichment.generated_value) if isinstance(enrichment.generated_value, str) else enrichment.generated_value
+            if not isinstance(gen_data, dict):
+                gen_data = {}
+        except Exception:
+            gen_data = {}
+
+    enr_data = {
+        "id": str(enrichment.id) if enrichment else None,
+        "product_id": str(product_id),
+        "commerce_description": gen_data.get("commerce_description") or product.commerce_description,
+        "short_description": gen_data.get("short_description"),
+        "features": gen_data.get("features") or product.features or [],
+        "applications": gen_data.get("applications") or product.applications or [],
+        "keywords": gen_data.get("keywords") or product.keywords or [],
+        "seo_title": gen_data.get("seo_title"),
+        "seo_description": gen_data.get("seo_description"),
+        "status": str(enrichment.status.value if hasattr(enrichment.status, "value") else enrichment.status) if enrichment else "pending",
+        "confidence": enrichment.confidence if enrichment else None,
+        "model": enrichment.model if enrichment else None,
+        "prompt_version": enrichment.prompt_version if enrichment else None,
+        "created_at": enrichment.created_at.isoformat() if enrichment and enrichment.created_at else None,
+    }
+
+    # Formatted attributes dict for quick lookup
+    formatted_attributes = {}
+    for attr in attributes:
+        val = attr.normalized_value if attr.normalized_value is not None else attr.raw_value
+        formatted_attributes[attr.attribute_name] = {
+            "value": val,
+            "unit": attr.unit,
+            "raw_value": attr.raw_value,
+            "display_name": attr.display_name,
+            "data_type": attr.data_type.value if hasattr(attr.data_type, "value") else str(attr.data_type),
+            "confidence": attr.confidence,
+            "status": attr.status.value if hasattr(attr.status, "value") else str(attr.status),
+            "source_type": attr.source_type,
+        }
+
+    product_dict = product.model_dump()
+    product_dict["attributes"] = formatted_attributes
+
+    return {
+        "product": product_dict,
+        "attributes": [a.model_dump() for a in attributes],
+        "evidence": [e.model_dump() for e in evidence],
+        "validation": val_summary,
+        "enrichment": enr_data,
+    }
+
+
 @router.get("/{product_id}", response_model=Product)
 def get_product(product_id: uuid.UUID, session: Session = Depends(get_session)):
     repo = ProductRepository(session)

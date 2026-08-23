@@ -3,8 +3,10 @@ CatalogIQ Assistant API Router.
 Provides POST /api/v1/assistant/chat endpoint for in-product Help Center queries.
 """
 import logging
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import Session
 
+from app.db.session import get_session
 from app.services.assistant import (
     AssistantChatRequest,
     AssistantChatResponse,
@@ -22,7 +24,10 @@ router = APIRouter(prefix="/assistant")
     status_code=status.HTTP_200_OK,
     summary="Submit question to CatalogIQ Assistant",
 )
-def assistant_chat(payload: AssistantChatRequest) -> AssistantChatResponse:
+def assistant_chat(
+    payload: AssistantChatRequest,
+    session: Session = Depends(get_session),
+) -> AssistantChatResponse:
     """
     Handles user help center and CatalogIQ operational questions.
     Returns grounded markdown explanation and contextual suggested follow-ups.
@@ -34,7 +39,7 @@ def assistant_chat(payload: AssistantChatRequest) -> AssistantChatResponse:
         )
 
     try:
-        service = AssistantService()
+        service = AssistantService(session=session)
         history_list = None
         if payload.history:
             history_list = [{"role": turn.role, "content": turn.content} for turn in payload.history]

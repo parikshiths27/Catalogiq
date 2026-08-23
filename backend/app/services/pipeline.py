@@ -252,7 +252,7 @@ class ParsingStage(PipelineStage):
         except Exception as e:
             raise TransientProcessingError(f"Failed to store parsed representation in storage: {e}")
 
-        # 8. Update database states
+        # 8. Update database states and persist durable intermediate representation
         document.status = DocumentStatus.processed
         document.content_hash = content_hash
         document.parsed_storage_key = parsed_storage_key
@@ -261,6 +261,10 @@ class ParsingStage(PipelineStage):
         document.page_count = len(parsed_data["pages"])
         document.parsed_at = datetime.now(timezone.utc)
         document.updated_at = datetime.now(timezone.utc)
+
+        meta = dict(document.metadata_json or {})
+        meta["intermediate_json"] = parsed_data
+        document.metadata_json = meta
 
         step.status = StepStatus.completed
         step.completed_at = datetime.now(timezone.utc)

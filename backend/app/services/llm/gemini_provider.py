@@ -292,15 +292,10 @@ class GeminiProvider(BaseLLMProvider):
         logger.info(f"Sending low-latency assistant request to Gemini model: {self._model}")
 
         try:
-            thinking_cfg = None
-            if hasattr(self._types, "ThinkingConfig"):
-                thinking_cfg = self._types.ThinkingConfig(thinking_budget=0)
-
             assistant_config = self._types.GenerateContentConfig(
                 response_mime_type="application/json",
                 temperature=0.2,
-                max_output_tokens=768,
-                thinking_config=thinking_cfg,
+                max_output_tokens=1536,
             )
             raw_content = self._generate_with_retry(full_prompt, assistant_config)
         except Exception as e:
@@ -312,7 +307,20 @@ class GeminiProvider(BaseLLMProvider):
             if cleaned_json.startswith("```"):
                 cleaned_json = re.sub(r"^```(?:json)?\s*", "", cleaned_json)
                 cleaned_json = re.sub(r"\s*```$", "", cleaned_json)
-            raw_dict = json.loads(cleaned_json)
+            
+            raw_dict = {}
+            try:
+                raw_dict = json.loads(cleaned_json, strict=False)
+            except Exception:
+                # Robust extraction if json was truncated or had unescaped characters
+                match_msg = re.search(r'"message"\s*:\s*"(.*?)(?:"\s*,\s*"suggestions"|"\s*\Z)', cleaned_json, re.DOTALL)
+                if match_msg:
+                    extracted = match_msg.group(1).rstrip('"} \n\r')
+                    extracted = extracted.replace('\\"', '"').replace('\\n', '\n')
+                    raw_dict = {"message": extracted}
+                else:
+                    raw_dict = {"message": cleaned_json}
+
             res_msg = str(
                 raw_dict.get("message")
                 or raw_dict.get("reply")

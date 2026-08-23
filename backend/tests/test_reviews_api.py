@@ -468,3 +468,129 @@ def test_reviews_resolution_scoping_and_custom_value(session: Session):
         assert p2.status == ProductStatus.verified
     finally:
         app.dependency_overrides.clear()
+
+
+def test_taxonomy_unresolved_human_review_resolution(session: Session):
+    """
+    Verifies that an invalid current taxonomy classpath cannot be accepted via accept_current,
+    cannot be overridden with another invalid value, but CAN be successfully replaced with
+    an approved classpath from the authoritative taxonomy tree via override_custom.
+    Also verifies Product category/subcategory update, quality score recalculation,
+    ValidationResult status transition, and AuditLog recording.
+    """
+    from app.api.v1.reviews import _get_valid_classpaths
+    valid_classpaths = _get_valid_classpaths()
+    assert len(valid_classpaths) > 0, "Reference loader must provide approved taxonomies"
+    approved_classpath = sorted(list(valid_classpaths))[0]  # Take a valid approved classpath
+
+    # 1. Create a product with an unapproved/invalid taxonomy value
+    invalid_extracted_category = "Industrial Supplies & MRO>General Supplies>Miscellaneous"
+    prod = Product(
+        sku="TEST-SKU-TAXONOMY-001",
+        brand="TestBrand",
+        product_name="Industrial Valve Assembly",
+        category=invalid_extracted_category,
+        subcategory="Miscellaneous",
+        status=ProductStatus.needs_review,
+        quality_score=60.0,
+    )
+    session.add(prod)
+    session.commit()
+    session.refresh(prod)
+
+    # 2. Create ValidationResult for taxonomy_unresolved
+    val = ValidationResult(
+        product_id=prod.id,
+        validation_type=ValidationType.taxonomy_unresolved,
+        severity=ValidationSeverity.warning,
+        status=ValidationStatus.open,
+        message=f"Category '{invalid_extracted_category}' is not in authoritative taxonomy tree",
+        actual_value=invalid_extracted_category,
+    )
+    session.add(val)
+    session.commit()
+    session.refresh(val)
+
+    def get_session_override():
+        yield session
+
+    app.dependency_overrides[get_session] = get_session_override
+    try:
+        # A. Fetch approved taxonomies endpoint
+        res_tax = client.get("/api/v1/reviews/approved-taxonomies")
+        assert res_tax.status_code == 200
+        tax_list = res_tax.json()
+        assert approved_classpath in tax_list
+
+        # B. Attempt accept_current with invalid value -> must be rejected with 422
+        res_accept = client.post(
+            f"/api/v1/reviews/items/{val.id}/resolve",
+            json={"action": "accept_current"},
+        )
+        assert res_accept.status_code == 422
+        assert "taxonomy_value_not_approved" in str(res_accept.json())
+
+        # C. Attempt override_custom with another invalid value -> must be rejected with 422
+        res_invalid_override = client.post(
+            f"/api/v1/reviews/items/{val.id}/resolve",
+            json={
+                "action": "override_custom",
+                "resolved_value": "TotallyFakeCategory>Subcategory>Leaf",
+            },
+        )
+        assert res_invalid_override.status_code == 422
+        assert "taxonomy_value_not_approved" in str(res_invalid_override.json())
+
+        # D. Override with valid approved classpath -> must succeed with 200
+        res_valid = client.post(
+            f"/api/v1/reviews/items/{val.id}/resolve",
+            json={
+                "action": "override_custom",
+                "resolved_value": approved_classpath,
+                "notes": "Mapped to approved canonical taxonomy classpath via human review UI",
+            },
+        )
+        assert res_valid.status_code == 200
+        res_data = res_valid.json()
+        assert res_data["status"] == "resolved"
+        assert res_data["resolved_value"] == approved_classpath
+        assert res_data["product_status"] == "verified"
+
+        # E. Verify ValidationResult updated in DB
+        session.refresh(val)
+        assert val.status == ValidationStatus.resolved
+        assert val.actual_value == approved_classpath
+        assert val.resolved_by == "human_reviewer"
+        assert val.resolved_at is not None
+
+        # F. Verify Product updated in DB
+        session.refresh(prod)
+        assert prod.category == approved_classpath
+        if ">" in approved_classpath:
+            assert prod.subcategory == approved_classpath.split(">")[-1].strip()
+        assert prod.status == ProductStatus.verified
+        assert prod.quality_score > 60.0
+
+        # G. Verify AuditLog recorded
+        audit = session.exec(
+            select(AuditLog).where(
+                AuditLog.entity_type == "validation_result",
+                AuditLog.entity_id == val.id,
+            )
+        ).first()
+        assert audit is not None
+        assert audit.action == "human_review_resolution"
+        assert audit.metadata_json["resolved_value"] == approved_classpath
+
+        # H. Verify issue moves from open to resolved in reviews queue
+        res_open = client.get("/api/v1/reviews?status=open")
+        open_ids = [item["validation_id"] for item in res_open.json()["items"]]
+        assert str(val.id) not in open_ids
+
+        res_resolved = client.get("/api/v1/reviews?status=resolved")
+        resolved_ids = [item["validation_id"] for item in res_resolved.json()["items"]]
+        assert str(val.id) in resolved_ids
+
+    finally:
+        app.dependency_overrides.clear()
+

@@ -118,6 +118,8 @@ const VALIDATION_TYPE_META: Record<string, { label: string; explanation: string 
   },
 };
 
+let cachedTaxonomies: string[] | null = null;
+
 export const ReviewsShell: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const paramProductId = searchParams.get('product_id');
@@ -135,6 +137,7 @@ export const ReviewsShell: React.FC = () => {
   // Resolution modal state
   const [selectedReview, setSelectedReview] = useState<ReviewItem | null>(null);
   const [resolving, setResolving] = useState<boolean>(false);
+  const [selectedTaxonomyClasspath, setSelectedTaxonomyClasspath] = useState<string | null>(null);
   const [customValueInput, setCustomValueInput] = useState<string>('');
   const [showCustomInput, setShowCustomInput] = useState<boolean>(false);
   const [resolutionSuccess, setResolutionSuccess] = useState<string | null>(null);
@@ -168,10 +171,15 @@ export const ReviewsShell: React.FC = () => {
   };
 
   const fetchApprovedTaxonomies = async () => {
+    if (cachedTaxonomies && cachedTaxonomies.length > 0) {
+      setApprovedTaxonomies(cachedTaxonomies);
+      return;
+    }
     try {
       const res = await fetch(apiUrl('/api/v1/reviews/approved-taxonomies'));
       if (res.ok) {
         const list: string[] = await res.json();
+        cachedTaxonomies = list;
         setApprovedTaxonomies(list);
       }
     } catch (err) {
@@ -187,16 +195,43 @@ export const ReviewsShell: React.FC = () => {
     fetchApprovedTaxonomies();
   }, []);
 
+  const openResolutionModal = (item: ReviewItem) => {
+    setSelectedReview(item);
+    setSelectedTaxonomyClasspath(null);
+    setCustomValueInput(item.validation_type === 'taxonomy_unresolved' ? '' : String(item.actual_value ?? item.current_value ?? ''));
+    setShowCustomInput(false);
+    setTaxonomySearch('');
+    setResolutionSuccess(null);
+  };
+
   const handleResolve = async (action: 'accept_current' | 'override_custom') => {
     if (!selectedReview) return;
     setResolving(true);
     setResolutionSuccess(null);
 
     const isTaxonomyUnresolved = selectedReview.validation_type === 'taxonomy_unresolved';
-    const effectiveVal = action === 'override_custom' ? customValueInput.trim() : String(selectedReview.actual_value || '');
+    let effectiveVal: string | null = null;
+
+    if (isTaxonomyUnresolved) {
+      if (!selectedTaxonomyClasspath || !selectedTaxonomyClasspath.trim()) {
+        alert('Please select an approved taxonomy classpath from the list.');
+        setResolving(false);
+        return;
+      }
+      effectiveVal = selectedTaxonomyClasspath.trim();
+    } else if (action === 'override_custom') {
+      if (!customValueInput.trim()) {
+        alert('Please enter a verified custom value.');
+        setResolving(false);
+        return;
+      }
+      effectiveVal = customValueInput.trim();
+    } else {
+      effectiveVal = String(selectedReview.actual_value ?? selectedReview.current_value ?? '');
+    }
 
     try {
-      const payload: any = {
+      const payload = {
         action: isTaxonomyUnresolved ? 'override_custom' : action,
         resolved_value: effectiveVal,
       };
@@ -225,7 +260,7 @@ export const ReviewsShell: React.FC = () => {
         setSelectedReview(null);
         setResolutionSuccess(null);
         fetchReviews();
-      }, 1000);
+      }, 700);
     } catch (err: any) {
       alert(`Error resolving: ${err?.message}`);
     } finally {
@@ -530,12 +565,7 @@ export const ReviewsShell: React.FC = () => {
                   {!isResolved && (
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => {
-                          setSelectedReview(item);
-                          setCustomValueInput(String(item.actual_value || ''));
-                          setShowCustomInput(item.validation_type === 'taxonomy_unresolved');
-                          setTaxonomySearch('');
-                        }}
+                        onClick={() => openResolutionModal(item)}
                         className="h-9 px-4 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none"
                       >
                         Resolve Issue
@@ -617,12 +647,12 @@ export const ReviewsShell: React.FC = () => {
 
                 <div className="max-h-48 overflow-y-auto border border-border bg-background divide-y divide-border rounded-none">
                   {filteredTaxonomies.slice(0, 30).map((cp) => {
-                    const isSelected = customValueInput === cp;
+                    const isSelected = selectedTaxonomyClasspath === cp;
                     return (
                       <button
                         key={cp}
                         type="button"
-                        onClick={() => setCustomValueInput(cp)}
+                        onClick={() => setSelectedTaxonomyClasspath(cp)}
                         className={`w-full text-left px-3 py-2 text-xs font-mono transition flex items-center justify-between ${
                           isSelected ? 'bg-emerald-500/20 text-emerald-400 font-bold' : 'hover:bg-card text-foreground'
                         }`}
@@ -634,9 +664,19 @@ export const ReviewsShell: React.FC = () => {
                   })}
                 </div>
 
-                {customValueInput && (
-                  <div className="p-2.5 border border-emerald-500/40 bg-emerald-500/10 text-xs font-mono text-emerald-400">
-                    Selected: <strong>{customValueInput}</strong>
+                {selectedTaxonomyClasspath ? (
+                  <div className="p-3 border border-emerald-500/40 bg-emerald-500/10 text-xs font-mono text-emerald-400 flex items-center justify-between rounded-none">
+                    <div>
+                      <span className="text-[10px] uppercase tracking-widest text-muted-foreground block">
+                        Selected Approved Classpath:
+                      </span>
+                      <strong className="text-emerald-400">{selectedTaxonomyClasspath}</strong>
+                    </div>
+                    <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                  </div>
+                ) : (
+                  <div className="p-2.5 border border-border bg-background/50 text-xs font-mono text-muted-foreground text-center rounded-none">
+                    No approved taxonomy classpath selected yet. Click an option from the list above.
                   </div>
                 )}
               </div>
@@ -666,10 +706,10 @@ export const ReviewsShell: React.FC = () => {
                 <>
                   <button
                     onClick={() => handleResolve('override_custom')}
-                    disabled={resolving || !customValueInput.trim()}
-                    className="w-full h-10 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none disabled:opacity-40"
+                    disabled={resolving || !selectedTaxonomyClasspath}
+                    className="w-full h-10 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    {resolving ? 'Saving & Revalidating...' : 'Choose Approved Value & Save'}
+                    {resolving ? 'Saving & Revalidating...' : 'Apply Approved Taxonomy & Resolve'}
                   </button>
                   <button
                     onClick={() => setSelectedReview(null)}

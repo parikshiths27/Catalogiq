@@ -24,11 +24,13 @@ app = FastAPI(
 
 # Configure CORS dynamically for local development and production environments
 cors_origins = settings.cors_origins_list
-allow_credentials = False if "*" in cors_origins else True
+allow_credentials = settings.cors_allow_credentials
+cors_regex = settings.CORS_ORIGIN_REGEX if ("*" not in cors_origins) else None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=cors_regex,
     allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],

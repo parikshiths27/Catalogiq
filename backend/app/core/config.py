@@ -41,13 +41,35 @@ class Settings(BaseSettings):
 
     # --- CORS Configuration ---
     # Comma-separated allowed frontend origins or "*" for open access
-    CORS_ORIGINS: str = "*"
+    CORS_ORIGINS: str = (
+        "https://catalogiq-orcin.vercel.app,"
+        "https://catalogiq-frontend.onrender.com,"
+        "http://localhost:5173,"
+        "http://localhost:3000,"
+        "http://localhost:8000,"
+        "http://127.0.0.1:5173,"
+        "http://127.0.0.1:3000"
+    )
+    CORS_ORIGIN_REGEX: Optional[str] = r"https://.*\.vercel\.app"
+    CORS_ALLOW_CREDENTIALS: bool = True
 
     @property
     def cors_origins_list(self) -> list[str]:
         if not self.CORS_ORIGINS or self.CORS_ORIGINS.strip() == "*":
             return ["*"]
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+        origins: list[str] = []
+        for origin in self.CORS_ORIGINS.split(","):
+            cleaned = origin.strip().rstrip("/")
+            if cleaned:
+                origins.append(cleaned)
+        return origins if origins else ["*"]
+
+    @property
+    def cors_allow_credentials(self) -> bool:
+        # Per W3C CORS specification: wildcard '*' origin cannot be paired with credentials=True
+        if "*" in self.cors_origins_list:
+            return False
+        return self.CORS_ALLOW_CREDENTIALS
 
     def __setattr__(self, name, value):
         if name == "DATABASE_URL" and isinstance(value, str) and value.startswith("postgres://"):

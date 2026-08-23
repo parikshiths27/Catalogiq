@@ -206,9 +206,9 @@ def test_gemini_low_latency_config_inspection():
     config = kwargs.get("config")
 
     assert config.temperature == 0.2
-    assert config.max_output_tokens == 768
+    assert config.max_output_tokens == 1536
     assert config.response_mime_type == "application/json"
-    assert config.thinking_config is not None
+    assert getattr(config, "thinking_config", None) is None
 
 
 # ==============================================================================
@@ -317,3 +317,204 @@ def test_system_prompt_anti_regression_checks():
     assert "PDF-only" not in prompt
     assert "Docling is the only parser" not in prompt
     assert "Excel uploads are not currently supported" not in prompt
+
+
+# ==============================================================================
+# PRODUCT-SPECIFIC & RECONCILIATION ASSISTANT TESTS
+# ==============================================================================
+
+def test_product_specific_why_needs_human_review(session: Session):
+    """
+    Test assistant answers product-specific question 'Why would product 49-94-0013 require human review?'
+    using retrieved product facts and open validation issues.
+    """
+    from app.models import (
+        ProductStatus,
+        AttributeDataType,
+        AttributeStatus,
+        ValidationResult,
+        ValidationType,
+        ValidationSeverity,
+        ValidationStatus,
+        AttributeEvidence,
+    )
+    p = Product(
+        sku="49-94-0013",
+        brand="Milwaukee",
+        product_name="Milwaukee 3 in. Cut-Off Wheel",
+        category="Abrasives>Abrasive Wheels & Discs>Cut-Off Wheels",
+        status=ProductStatus.needs_review,
+        quality_score=75.0,
+    )
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+
+    attr = ProductAttribute(
+        product_id=p.id,
+        attribute_name="diameter",
+        display_name="Diameter",
+        raw_value="3 in",
+        unit="in",
+        data_type=AttributeDataType.numeric,
+        confidence=0.68,
+        status=AttributeStatus.needs_review,
+        source_type="document",
+    )
+    session.add(attr)
+    session.commit()
+    session.refresh(attr)
+
+    ev = AttributeEvidence(
+        attribute_id=attr.id,
+        page_number=14,
+        evidence_text="Wheel diameter measures 3 in. (76 mm) with 3/8 in. arbor.",
+        extraction_method="llm",
+    )
+    session.add(ev)
+
+    val = ValidationResult(
+        product_id=p.id,
+        attribute_id=attr.id,
+        validation_type=ValidationType.low_confidence,
+        severity=ValidationSeverity.warning,
+        status=ValidationStatus.open,
+        message="Attribute 'diameter' was extracted with 68% confidence (< 75% threshold).",
+        actual_value="3 in",
+    )
+    session.add(val)
+    session.commit()
+
+    service = AssistantService(provider=MockProvider(), session=session)
+    res = service.answer_question("Why would product 49-94-0013 require human review?")
+
+    assert res.message is not None
+    assert "49-94-0013" in res.message
+    assert "Milwaukee" in res.message or "Cut-Off Wheel" in res.message
+    assert "diameter" in res.message.lower() or "confidence" in res.message.lower() or "review" in res.message.lower()
+    assert "Generic capability message" not in res.message
+
+
+def test_product_specific_where_did_attribute_come_from(session: Session):
+    """
+    Test assistant answers 'Where did the Diameter attribute come from?' using verbatim evidence quote and provenance.
+    """
+    from app.models import ProductStatus, AttributeDataType, AttributeStatus, AttributeEvidence
+    p = Product(
+        sku="49-94-0013-SRC",
+        brand="Milwaukee",
+        product_name="Milwaukee 3 in. Cut-Off Wheel",
+        category="Abrasives",
+        status=ProductStatus.needs_review,
+        quality_score=75.0,
+    )
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+
+    attr = ProductAttribute(
+        product_id=p.id,
+        attribute_name="diameter",
+        display_name="Diameter",
+        raw_value="3 in",
+        unit="in",
+        data_type=AttributeDataType.numeric,
+        confidence=0.92,
+        status=AttributeStatus.verified,
+        source_type="document",
+    )
+    session.add(attr)
+    session.commit()
+    session.refresh(attr)
+
+    ev = AttributeEvidence(
+        attribute_id=attr.id,
+        page_number=14,
+        evidence_text="Wheel diameter measures 3 in. (76 mm) with 3/8 in. arbor.",
+        extraction_method="llm",
+    )
+    session.add(ev)
+    session.commit()
+
+    service = AssistantService(provider=MockProvider(), session=session)
+    res = service.answer_question("Where did the Diameter attribute come from?", context={"product_id": str(p.id)})
+
+    assert res.message is not None
+    assert "Diameter" in res.message
+    assert "3 in" in res.message
+    assert "Page 14" in res.message or "14" in res.message
+    assert "Wheel diameter measures 3 in" in res.message
+
+
+def test_product_specific_why_is_product_needs_review(session: Session):
+    """
+    Test assistant answers 'Why is this product NEEDS_REVIEW?' with context product_id.
+    """
+    from app.models import (
+        ProductStatus,
+        AttributeDataType,
+        AttributeStatus,
+        ValidationResult,
+        ValidationType,
+        ValidationSeverity,
+        ValidationStatus,
+    )
+    p = Product(
+        sku="P-REV-99",
+        brand="TechMotors",
+        product_name="TechMotors AC Motor",
+        category="Motors",
+        status=ProductStatus.needs_review,
+        quality_score=60.0,
+    )
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+
+    val = ValidationResult(
+        product_id=p.id,
+        validation_type=ValidationType.missing_required_field,
+        severity=ValidationSeverity.error,
+        status=ValidationStatus.open,
+        message="Missing mandatory manufacturer part number (MPN).",
+    )
+    session.add(val)
+    session.commit()
+
+    service = AssistantService(provider=MockProvider(), session=session)
+    res = service.answer_question("Why is this product NEEDS_REVIEW?", context={"product_id": str(p.id)})
+
+    assert res.message is not None
+    assert "TechMotors" in res.message or "P-REV-99" in res.message
+    assert "needs_review" in res.message.lower() or "missing" in res.message.lower() or "validation" in res.message.lower()
+
+    assert res.message is not None
+    assert "TechMotors" in res.message or "P-REV-99" in res.message
+    assert "needs_review" in res.message.lower() or "missing" in res.message.lower() or "validation" in res.message.lower()
+
+
+def test_reconcile_conflicting_manufacturer_claims():
+    """
+    Test assistant answers 'How does CatalogIQ reconcile conflicting manufacturer claims?'
+    explaining multi-source reconciliation, trust weights, and human review routing.
+    """
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("How does CatalogIQ reconcile conflicting manufacturer claims?")
+
+    assert res.message is not None
+    assert "reconcile" in res.message.lower() or "multi-source" in res.message.lower()
+    assert "trust" in res.message.lower() or "hierarchy" in res.message.lower() or "weight" in res.message.lower()
+    assert "conflict" in res.message.lower() or "review" in res.message.lower()
+
+
+def test_product_not_found_explicit_message():
+    """
+    Test assistant explicitly states when a queried product cannot be found in the database.
+    """
+    service = AssistantService(provider=MockProvider())
+    res = service.answer_question("Why would product NONEXISTENT-SKU-999 require human review?")
+
+    assert res.message is not None
+    assert "NONEXISTENT-SKU-999" in res.message
+    assert "could not be found" in res.message.lower() or "not found" in res.message.lower()
+

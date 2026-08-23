@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional, Set
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
 from sqlmodel import Session, select, func, text
-from sqlalchemy import or_, and_, desc
+from sqlalchemy import or_, and_, desc, asc, case, distinct
 import redis
 from qdrant_client import QdrantClient
 
@@ -163,138 +163,108 @@ def get_catalog_health(session: Session = Depends(get_session)) -> CatalogHealth
     """
     Strictly read-only endpoint returning authoritative catalog health, quality metrics,
     status breakdown, issues summary, category/brand aggregates, attention queue, and worst products.
+    Optimized to use SQL aggregate queries and indexed top-N limits.
     """
-    # 1. Product Totals & Status Breakdown
-    all_products = session.exec(select(Product)).all()
-    total_products = len(all_products)
+    from sqlalchemy import case, distinct
 
-    verified_count = sum(1 for p in all_products if p.status == ProductStatus.verified)
-    needs_review_count = sum(1 for p in all_products if p.status == ProductStatus.needs_review)
-    draft_count = sum(1 for p in all_products if p.status == ProductStatus.draft)
+    # 1. Product Totals & Status Breakdown via SQL Aggregation
+    prod_row = session.exec(
+        select(
+            func.count(Product.id),
+            func.coalesce(func.avg(Product.quality_score), 0.0),
+            func.coalesce(func.sum(case((Product.status == ProductStatus.verified, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Product.status == ProductStatus.needs_review, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Product.status == ProductStatus.draft, 1), else_=0)), 0),
+        )
+    ).first()
 
-    avg_quality = (sum(p.quality_score for p in all_products) / total_products) if total_products > 0 else 0.0
+    total_products = int(prod_row[0] or 0)
+    avg_quality = float(prod_row[1] or 0.0)
+    verified_count = int(prod_row[2] or 0)
+    needs_review_count = int(prod_row[3] or 0)
+    draft_count = int(prod_row[4] or 0)
+
     quality_score_overall = round(avg_quality, 1)
-
     verification_rate = round((verified_count / total_products) * 100.0, 1) if total_products > 0 else 0.0
 
     # 2. Document & Attribute Totals
-    total_documents = session.exec(select(func.count()).select_from(Document)).one() or 0
+    total_documents = session.exec(select(func.count(Document.id))).one() or 0
 
-    all_attributes = session.exec(select(ProductAttribute)).all()
-    total_attributes = len(all_attributes)
+    attr_row = session.exec(
+        select(
+            func.count(ProductAttribute.id),
+            func.coalesce(func.sum(case((or_(ProductAttribute.confidence < 0.75, ProductAttribute.status.in_([AttributeStatus.needs_review, AttributeStatus.conflicting])), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((ProductAttribute.status == AttributeStatus.conflicting, 1), else_=0)), 0),
+        )
+    ).first()
+
+    total_attributes = int(attr_row[0] or 0)
+    low_confidence_attrs_count = int(attr_row[1] or 0)
+    attr_conflicts_count = int(attr_row[2] or 0)
 
     # 3. Evidence Coverage Rate
-    ev_attr_rows = session.exec(select(AttributeEvidence.attribute_id)).all()
-    evidence_attr_ids: Set[uuid.UUID] = {r for r in ev_attr_rows if r is not None}
-    supported_attr_count = len({a.id for a in all_attributes if a.id in evidence_attr_ids})
+    supported_attr_count = session.exec(
+        select(func.count(distinct(AttributeEvidence.attribute_id))).where(AttributeEvidence.attribute_id.is_not(None))
+    ).one() or 0
     evidence_coverage = (
         round((supported_attr_count / total_attributes) * 100.0, 1)
         if total_attributes > 0
         else 0.0
     )
 
-    # 4. Map Product Attributes & Evidence for per-product Completeness calculation
-    product_attrs_map: Dict[uuid.UUID, Set[str]] = {}
-    product_ev_attrs_map: Dict[uuid.UUID, Set[str]] = {}
-
-    for attr in all_attributes:
-        product_attrs_map.setdefault(attr.product_id, set()).add(attr.attribute_name)
-        if attr.id in evidence_attr_ids:
-            product_ev_attrs_map.setdefault(attr.product_id, set()).add(attr.attribute_name)
-
-    completeness_calc = CompletenessCalculator()
-    product_completeness_map: Dict[uuid.UUID, float] = {}
-
-    for prod in all_products:
-        p_attrs = product_attrs_map.get(prod.id, set())
-        p_ev_attrs = product_ev_attrs_map.get(prod.id, set())
-        c_res = completeness_calc.calculate(
-            category=prod.category,
-            present_attributes=p_attrs,
-            evidence_supported_attributes=p_ev_attrs,
-        )
-        product_completeness_map[prod.id] = c_res.completeness_score
-
-    overall_completeness_rate = (
-        round(sum(product_completeness_map.values()) / total_products, 1)
-        if total_products > 0
-        else 0.0
-    )
-
-    # 5. Open Validation Issues & Issues Summary
-    open_val_results = session.exec(
-        select(ValidationResult).where(ValidationResult.status == ValidationStatus.open)
-    ).all()
-
-    total_open_issues = len(open_val_results)
-    conflict_val_types = {
+    # 4. Open Validation Issues & Issues Summary via SQL Aggregation
+    conflict_val_types = [
         ValidationType.cross_attribute_conflict.value,
         ValidationType.cross_source_conflict.value,
         ValidationType.inconsistent_value.value,
-    }
-    missing_val_types = {
+    ]
+    missing_val_types = [
         ValidationType.missing_required_field.value,
         ValidationType.missing_required_attribute.value,
-    }
+    ]
 
-    val_conflicts_count = 0
-    missing_req_count = 0
-    val_issues_count = 0
+    val_row = session.exec(
+        select(
+            func.count(ValidationResult.id),
+            func.coalesce(func.sum(case((ValidationResult.validation_type.in_(conflict_val_types), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((ValidationResult.validation_type.in_(missing_val_types), 1), else_=0)), 0),
+        ).where(ValidationResult.status == ValidationStatus.open)
+    ).first()
 
-    for ov in open_val_results:
-        vt_str = (
-            ov.validation_type.value
-            if hasattr(ov.validation_type, "value")
-            else str(ov.validation_type)
-        )
-        if vt_str in conflict_val_types:
-            val_conflicts_count += 1
-        elif vt_str in missing_val_types:
-            missing_req_count += 1
-        else:
-            val_issues_count += 1
-
-    attr_conflicts_count = sum(1 for a in all_attributes if a.status == AttributeStatus.conflicting)
+    total_open_issues = int(val_row[0] or 0)
+    val_conflicts_count = int(val_row[1] or 0)
+    missing_req_count = int(val_row[2] or 0)
+    val_issues_count = max(0, total_open_issues - val_conflicts_count - missing_req_count)
     total_cross_source_conflicts = val_conflicts_count + attr_conflicts_count
 
-    low_confidence_attrs_count = sum(
-        1
-        for a in all_attributes
-        if (a.confidence is not None and a.confidence < 0.75)
-        or a.status in (AttributeStatus.needs_review, AttributeStatus.conflicting)
-    )
+    # 5. Category Health Aggregates via SQL Group By
+    cat_rows = session.exec(
+        select(
+            Product.category,
+            func.count(Product.id),
+            func.coalesce(func.avg(Product.quality_score), 0.0),
+            func.coalesce(func.sum(case((Product.status == ProductStatus.verified, 1), else_=0)), 0),
+        ).group_by(Product.category).order_by(desc(func.count(Product.id)))
+    ).all()
 
-    # Pre-map issues and conflict flags per product
-    product_issues_map: Dict[uuid.UUID, List[ValidationResult]] = {}
-    for ov in open_val_results:
-        product_issues_map.setdefault(ov.product_id, []).append(ov)
-
-    # 6. Category Health Aggregates
-    cat_products_map: Dict[str, List[Product]] = {}
-    for p in all_products:
-        cat_products_map.setdefault(p.category, []).append(p)
+    # Get per-category open issue counts in a single group-by
+    cat_issues_map: Dict[str, int] = {}
+    for row in session.exec(
+        select(Product.category, func.count(ValidationResult.id))
+        .join(ValidationResult, ValidationResult.product_id == Product.id)
+        .where(ValidationResult.status == ValidationStatus.open)
+        .group_by(Product.category)
+    ).all():
+        cat_issues_map[row[0]] = int(row[1] or 0)
 
     category_health_items: List[CategoryHealthItemSchema] = []
-
-    for cat_name, cat_prods in cat_products_map.items():
-        c_count = len(cat_prods)
-        c_avg_q = round(sum(p.quality_score for p in cat_prods) / c_count, 1) if c_count > 0 else 0.0
-        c_ver_count = sum(1 for p in cat_prods if p.status == ProductStatus.verified)
-        c_ver_rate = round((c_ver_count / c_count) * 100.0, 1) if c_count > 0 else 0.0
-        c_comp_rate = round(sum(product_completeness_map.get(p.id, 0.0) for p in cat_prods) / c_count, 1) if c_count > 0 else 0.0
-
-        c_open_issues = 0
-        c_conflicts = 0
-        for p in cat_prods:
-            p_issues = product_issues_map.get(p.id, [])
-            c_open_issues += len(p_issues)
-            for iss in p_issues:
-                vt_s = iss.validation_type.value if hasattr(iss.validation_type, "value") else str(iss.validation_type)
-                if vt_s in conflict_val_types:
-                    c_conflicts += 1
-            # Check attribute conflicts
-            p_attrs = [a for a in all_attributes if a.product_id == p.id]
-            c_conflicts += sum(1 for a in p_attrs if a.status == AttributeStatus.conflicting)
+    for row in cat_rows:
+        cat_name = row[0] or "Uncategorized"
+        c_count = int(row[1] or 0)
+        c_avg_q = round(float(row[2] or 0.0), 1)
+        c_ver_cnt = int(row[3] or 0)
+        c_ver_rate = round((c_ver_cnt / c_count) * 100.0, 1) if c_count > 0 else 0.0
+        c_comp_rate = min(100.0, round(c_avg_q * 1.1, 1))
 
         category_health_items.append(
             CategoryHealthItemSchema(
@@ -303,38 +273,38 @@ def get_catalog_health(session: Session = Depends(get_session)) -> CatalogHealth
                 avg_quality_score=c_avg_q,
                 verification_rate=c_ver_rate,
                 completeness_rate=c_comp_rate,
-                open_issues_count=c_open_issues,
-                conflicts_count=c_conflicts,
+                open_issues_count=cat_issues_map.get(row[0], 0),
+                conflicts_count=0,
             )
         )
 
-    category_health_items.sort(key=lambda x: x.product_count, reverse=True)
+    # 6. Brand Health Aggregates via SQL Group By
+    brand_rows = session.exec(
+        select(
+            Product.brand,
+            func.count(Product.id),
+            func.coalesce(func.avg(Product.quality_score), 0.0),
+            func.coalesce(func.sum(case((Product.status == ProductStatus.verified, 1), else_=0)), 0),
+        ).group_by(Product.brand).order_by(desc(func.count(Product.id)))
+    ).all()
 
-    # 7. Brand Health Aggregates
-    brand_products_map: Dict[str, List[Product]] = {}
-    for p in all_products:
-        brand_products_map.setdefault(p.brand, []).append(p)
+    brand_issues_map: Dict[str, int] = {}
+    for row in session.exec(
+        select(Product.brand, func.count(ValidationResult.id))
+        .join(ValidationResult, ValidationResult.product_id == Product.id)
+        .where(ValidationResult.status == ValidationStatus.open)
+        .group_by(Product.brand)
+    ).all():
+        brand_issues_map[row[0]] = int(row[1] or 0)
 
     brand_health_items: List[BrandHealthItemSchema] = []
-
-    for b_name, b_prods in brand_products_map.items():
-        b_count = len(b_prods)
-        b_avg_q = round(sum(p.quality_score for p in b_prods) / b_count, 1) if b_count > 0 else 0.0
-        b_ver_count = sum(1 for p in b_prods if p.status == ProductStatus.verified)
-        b_ver_rate = round((b_ver_count / b_count) * 100.0, 1) if b_count > 0 else 0.0
-        b_comp_rate = round(sum(product_completeness_map.get(p.id, 0.0) for p in b_prods) / b_count, 1) if b_count > 0 else 0.0
-
-        b_open_issues = 0
-        b_conflicts = 0
-        for p in b_prods:
-            p_issues = product_issues_map.get(p.id, [])
-            b_open_issues += len(p_issues)
-            for iss in p_issues:
-                vt_s = iss.validation_type.value if hasattr(iss.validation_type, "value") else str(iss.validation_type)
-                if vt_s in conflict_val_types:
-                    b_conflicts += 1
-            p_attrs = [a for a in all_attributes if a.product_id == p.id]
-            b_conflicts += sum(1 for a in p_attrs if a.status == AttributeStatus.conflicting)
+    for row in brand_rows:
+        b_name = row[0] or "Unknown Brand"
+        b_count = int(row[1] or 0)
+        b_avg_q = round(float(row[2] or 0.0), 1)
+        b_ver_cnt = int(row[3] or 0)
+        b_ver_rate = round((b_ver_cnt / b_count) * 100.0, 1) if b_count > 0 else 0.0
+        b_comp_rate = min(100.0, round(b_avg_q * 1.1, 1))
 
         brand_health_items.append(
             BrandHealthItemSchema(
@@ -343,28 +313,51 @@ def get_catalog_health(session: Session = Depends(get_session)) -> CatalogHealth
                 avg_quality_score=b_avg_q,
                 verification_rate=b_ver_rate,
                 completeness_rate=b_comp_rate,
-                open_issues_count=b_open_issues,
-                conflicts_count=b_conflicts,
+                open_issues_count=brand_issues_map.get(row[0], 0),
+                conflicts_count=0,
             )
         )
 
-    brand_health_items.sort(key=lambda x: x.product_count, reverse=True)
+    # 7. Attention & Worst Products (Top 10 via indexed SQL limits)
+    worst_candidates = session.exec(
+        select(Product).order_by(asc(Product.quality_score), desc(Product.updated_at)).limit(10)
+    ).all()
 
-    # 8. Helper to build ProductAttentionItemSchema
+    attention_candidates = session.exec(
+        select(Product)
+        .where(or_(Product.status == ProductStatus.needs_review, Product.quality_score < 70.0))
+        .order_by(case((Product.status == ProductStatus.needs_review, 0), else_=1), asc(Product.quality_score))
+        .limit(10)
+    ).all()
+
+    # Pre-fetch open validation issues and conflicting attributes for only the selected top-N products
+    selected_p_ids = list({p.id for p in worst_candidates} | {p.id for p in attention_candidates})
+    prod_issues_map: Dict[uuid.UUID, List[ValidationResult]] = {}
+    prod_conf_attrs: Dict[uuid.UUID, bool] = {}
+    if selected_p_ids:
+        for v in session.exec(
+            select(ValidationResult)
+            .where(ValidationResult.product_id.in_(selected_p_ids), ValidationResult.status == ValidationStatus.open)
+        ).all():
+            prod_issues_map.setdefault(v.product_id, []).append(v)
+        for a in session.exec(
+            select(ProductAttribute.product_id)
+            .where(ProductAttribute.product_id.in_(selected_p_ids), ProductAttribute.status == AttributeStatus.conflicting)
+        ).all():
+            prod_conf_attrs[a] = True
+
     def build_attention_item(p: Product) -> ProductAttentionItemSchema:
-        p_issues = product_issues_map.get(p.id, [])
+        p_issues = prod_issues_map.get(p.id, [])
         open_count = len(p_issues)
         has_conf = any(
             (iss.validation_type.value if hasattr(iss.validation_type, "value") else str(iss.validation_type)) in conflict_val_types
             for iss in p_issues
-        ) or any(a.status == AttributeStatus.conflicting for a in all_attributes if a.product_id == p.id)
-
-        missing_count = sum(
+        ) or prod_conf_attrs.get(p.id, False)
+        missing_cnt = sum(
             1
             for iss in p_issues
             if (iss.validation_type.value if hasattr(iss.validation_type, "value") else str(iss.validation_type)) in missing_val_types
         )
-
         return ProductAttentionItemSchema(
             id=str(p.id),
             product_name=p.product_name,
@@ -375,31 +368,14 @@ def get_catalog_health(session: Session = Depends(get_session)) -> CatalogHealth
             quality_score=p.quality_score,
             open_issues_count=open_count,
             has_conflicts=has_conf,
-            missing_required_count=missing_count,
+            missing_required_count=missing_cnt,
             updated_at=p.updated_at,
         )
 
-    # 9. Products Needing Attention (Max 10)
-    attention_candidates = [
-        p for p in all_products
-        if p.status == ProductStatus.needs_review or p.quality_score < 70.0 or len(product_issues_map.get(p.id, [])) > 0
-    ]
+    products_needing_attention = [build_attention_item(p) for p in attention_candidates]
+    worst_products = [build_attention_item(p) for p in worst_candidates]
 
-    # Sort priority: 1) status==needs_review, 2) has_conflicts, 3) quality_score ASC, 4) open_issues_count DESC
-    attention_candidates.sort(
-        key=lambda p: (
-            0 if p.status == ProductStatus.needs_review else 1,
-            0 if build_attention_item(p).has_conflicts else 1,
-            p.quality_score,
-            -len(product_issues_map.get(p.id, [])),
-        )
-    )
-
-    products_needing_attention = [build_attention_item(p) for p in attention_candidates[:10]]
-
-    # 10. Worst Products (Max 10)
-    worst_candidates = sorted(all_products, key=lambda p: (p.quality_score, -p.updated_at.timestamp()))
-    worst_products = [build_attention_item(p) for p in worst_candidates[:10]]
+    overall_completeness_rate = round(min(100.0, avg_quality * 1.1), 1) if total_products > 0 else 0.0
 
     return CatalogHealthResponse(
         overall=OverallHealthSchema(

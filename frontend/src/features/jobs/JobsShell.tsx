@@ -27,15 +27,17 @@ export const JobsShell: React.FC = () => {
   const [clearing, setClearing] = useState(false);
 
   // JSON Inspector Modal state
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
-  const [parsedData, setParsedData] = useState<any | null>(null);
   const [loadingParsed, setLoadingParsed] = useState(false);
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [parsedData, setParsedData] = useState<any>(null);
+  const [parsedError, setParsedError] = useState<string | null>(null);
 
   const fetchDocuments = async () => {
     try {
       setLoading(true);
+      setError(null);
       const res = await fetch(apiUrl('/api/v1/documents/'));
-      if (!res.ok) throw new Error('Failed to fetch documents list');
+      if (!res.ok) throw new Error('Failed to fetch processing logs');
       const data: DocumentInfo[] = await res.json();
       // Sort by created_at desc
       data.sort((a, b) => (parseApiDate(b.created_at)?.getTime() || 0) - (parseApiDate(a.created_at)?.getTime() || 0));
@@ -54,14 +56,22 @@ export const JobsShell: React.FC = () => {
   const handleInspectJson = async (docId: string) => {
     setSelectedDocId(docId);
     setParsedData(null);
+    setParsedError(null);
     setLoadingParsed(true);
     try {
       const res = await fetch(apiUrl(`/api/v1/documents/${docId}/parsed`));
-      if (!res.ok) throw new Error('Failed to retrieve intermediate representation');
+      if (!res.ok) {
+        let errMsg = `Failed to retrieve intermediate representation (HTTP ${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData.detail) errMsg = errData.detail;
+        } catch {}
+        throw new Error(errMsg);
+      }
       const data = await res.json();
       setParsedData(data);
     } catch (err: any) {
-      setError(err.message);
+      setParsedError(err.message || 'Failed to retrieve intermediate representation');
     } finally {
       setLoadingParsed(false);
     }
@@ -244,6 +254,25 @@ export const JobsShell: React.FC = () => {
               <div className="flex-1 flex justify-center items-center">
                 <Loader2 className="w-8 h-8 text-primary animate-spin" />
               </div>
+            ) : parsedError ? (
+              <div className="flex-1 flex flex-col justify-center items-center p-6 text-center space-y-4">
+                <div className="p-4 bg-destructive/10 border border-destructive/20 text-destructive text-xs max-w-md w-full text-left">
+                  <p className="font-semibold uppercase tracking-wider mb-1">Failed to Retrieve Intermediate Representation</p>
+                  <p className="font-mono text-[11px] leading-relaxed break-words">{parsedError}</p>
+                </div>
+                {selectedDocId && (
+                  <button
+                    onClick={() => {
+                      const id = selectedDocId;
+                      setSelectedDocId(null);
+                      handleForceReprocess(id);
+                    }}
+                    className="px-4 py-2 bg-primary text-primary-foreground text-xs uppercase tracking-widest font-medium hover:bg-primary/90 transition rounded-none"
+                  >
+                    Force Reprocess Document
+                  </button>
+                )}
+              </div>
             ) : parsedData ? (
               <div className="flex-1 flex flex-col space-y-4 overflow-hidden">
                 <div className="grid grid-cols-2 gap-4 text-xs bg-background p-4 border border-border rounded-none">
@@ -263,7 +292,7 @@ export const JobsShell: React.FC = () => {
               </div>
             ) : (
               <div className="text-center text-muted-foreground py-20 text-xs uppercase tracking-wider">
-                Failed to parse layout representation.
+                No layout representation available.
               </div>
             )}
           </div>
