@@ -70,25 +70,174 @@ interface OverviewData {
   recent_products: RecentProductItem[];
 }
 
+interface DashboardErrorState {
+  category: 'network' | 'http' | 'json' | 'schema' | 'unknown';
+  categoryLabel: string;
+  message: string;
+  details?: string;
+  statusCode?: number;
+}
+
+function normalizeOverviewData(raw: any): OverviewData {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Expected JSON object in overview response');
+  }
+
+  const kpisRaw = raw.kpis || {};
+  const reviewRaw = raw.review_summary || {};
+  const qualityRaw = raw.catalog_quality_summary || {};
+
+  const kpis: OverviewKpis = {
+    total_products: typeof kpisRaw.total_products === 'number' ? kpisRaw.total_products : 0,
+    documents_processed: typeof kpisRaw.documents_processed === 'number' ? kpisRaw.documents_processed : 0,
+    total_documents: typeof kpisRaw.total_documents === 'number' ? kpisRaw.total_documents : 0,
+    active_processing_jobs: typeof kpisRaw.active_processing_jobs === 'number' ? kpisRaw.active_processing_jobs : 0,
+    review_backlog: typeof kpisRaw.review_backlog === 'number' ? kpisRaw.review_backlog : 0,
+    catalog_quality_score: typeof kpisRaw.catalog_quality_score === 'number' ? kpisRaw.catalog_quality_score : null,
+    verification_rate: typeof kpisRaw.verification_rate === 'number' ? kpisRaw.verification_rate : null,
+  };
+
+  const review_summary: ReviewSummary = {
+    unresolved_validation_issues: typeof reviewRaw.unresolved_validation_issues === 'number' ? reviewRaw.unresolved_validation_issues : 0,
+    conflicts_count: typeof reviewRaw.conflicts_count === 'number' ? reviewRaw.conflicts_count : 0,
+    low_confidence_attributes: typeof reviewRaw.low_confidence_attributes === 'number' ? reviewRaw.low_confidence_attributes : 0,
+    products_needing_review: typeof reviewRaw.products_needing_review === 'number' ? reviewRaw.products_needing_review : 0,
+  };
+
+  const catalog_quality_summary: CatalogQualitySummary = {
+    overall_quality_score: typeof qualityRaw.overall_quality_score === 'number' ? qualityRaw.overall_quality_score : null,
+    completeness_rate: typeof qualityRaw.completeness_rate === 'number' ? qualityRaw.completeness_rate : null,
+    verified_products_count: typeof qualityRaw.verified_products_count === 'number' ? qualityRaw.verified_products_count : 0,
+    needs_review_products_count: typeof qualityRaw.needs_review_products_count === 'number' ? qualityRaw.needs_review_products_count : 0,
+    draft_products_count: typeof qualityRaw.draft_products_count === 'number' ? qualityRaw.draft_products_count : 0,
+    evidence_coverage_rate: typeof qualityRaw.evidence_coverage_rate === 'number' ? qualityRaw.evidence_coverage_rate : null,
+    products_needing_attention: typeof qualityRaw.products_needing_attention === 'number' ? qualityRaw.products_needing_attention : 0,
+  };
+
+  const processing_activity: ProcessingActivityItem[] = Array.isArray(raw.processing_activity)
+    ? raw.processing_activity.map((item: any) => ({
+        id: String(item?.id || ''),
+        filename: String(item?.filename || 'Untitled document'),
+        status: String(item?.status || 'unknown'),
+        created_at: String(item?.created_at || ''),
+        page_count: typeof item?.page_count === 'number' ? item.page_count : null,
+        current_stage: item?.current_stage ? String(item.current_stage) : null,
+      }))
+    : [];
+
+  const recent_products: RecentProductItem[] = Array.isArray(raw.recent_products)
+    ? raw.recent_products.map((item: any) => ({
+        id: String(item?.id || ''),
+        product_name: String(item?.product_name || 'Unnamed Product'),
+        brand: String(item?.brand || '-'),
+        sku: String(item?.sku || '-'),
+        category: String(item?.category || '-'),
+        status: String(item?.status || 'draft'),
+        quality_score: typeof item?.quality_score === 'number' ? item.quality_score : 0,
+        updated_at: String(item?.updated_at || ''),
+      }))
+    : [];
+
+  return {
+    kpis,
+    review_summary,
+    catalog_quality_summary,
+    processing_activity,
+    recent_products,
+  };
+}
+
 export const DashboardShell: React.FC = () => {
   const navigate = useNavigate();
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DashboardErrorState | null>(null);
 
   const fetchOverview = async () => {
+    setLoading(true);
+    setError(null);
+
+    let res: Response | null = null;
+    const url = apiUrl('/api/v1/overview/summary');
+
+    // 1. Network / Request Execution
     try {
-      setLoading(true);
-      setError(null);
-      const res = await fetch(apiUrl('/api/v1/overview/summary'));
-      if (!res.ok) {
-        throw new Error(`Server returned HTTP ${res.status}`);
+      res = await fetch(url);
+    } catch (networkErr: any) {
+      console.error('[Overview Dashboard] Network error during fetch:', {
+        url,
+        error: networkErr,
+      });
+      setError({
+        category: 'network',
+        categoryLabel: 'Network / Connection Error',
+        message: 'Could not connect to backend server. Please verify your internet connection or backend availability.',
+        details: networkErr?.message || String(networkErr),
+      });
+      setLoading(false);
+      return;
+    }
+
+    // 2. HTTP Status Check
+    if (!res.ok) {
+      let errorBody = '';
+      try {
+        errorBody = await res.text();
+      } catch {
+        // ignore text read failure
       }
-      const summaryData: OverviewData = await res.json();
+      console.error('[Overview Dashboard] HTTP error response:', {
+        status: res.status,
+        statusText: res.statusText,
+        url,
+        body: errorBody,
+      });
+      setError({
+        category: 'http',
+        categoryLabel: `HTTP Error (${res.status})`,
+        message: `Backend service returned error status ${res.status} (${res.statusText}).`,
+        details: errorBody ? errorBody.slice(0, 300) : undefined,
+        statusCode: res.status,
+      });
+      setLoading(false);
+      return;
+    }
+
+    // 3. JSON Parsing Check
+    let rawJson: any = null;
+    try {
+      rawJson = await res.json();
+    } catch (jsonErr: any) {
+      console.error('[Overview Dashboard] JSON parsing error on HTTP 200 response:', {
+        url,
+        error: jsonErr,
+      });
+      setError({
+        category: 'json',
+        categoryLabel: 'JSON Parse Error',
+        message: 'Server returned HTTP 200, but response body was not valid JSON.',
+        details: jsonErr?.message || String(jsonErr),
+      });
+      setLoading(false);
+      return;
+    }
+
+    // 4. Response Schema & Data Normalization
+    try {
+      const summaryData = normalizeOverviewData(rawJson);
       setData(summaryData);
-    } catch (err: any) {
-      console.error('Failed to fetch Overview summary:', err);
-      setError(err?.message || 'Failed to load Overview dashboard data');
+    } catch (schemaErr: any) {
+      console.error('[Overview Dashboard] Response schema mismatch:', {
+        url,
+        rawJson,
+        error: schemaErr,
+      });
+      setError({
+        category: 'schema',
+        categoryLabel: 'Response Schema Error',
+        message: 'Overview data structure returned by backend is missing required fields.',
+        details: schemaErr?.message || String(schemaErr),
+      });
     } finally {
       setLoading(false);
     }
@@ -139,9 +288,17 @@ export const DashboardShell: React.FC = () => {
         </div>
         <div className="p-8 bg-destructive/10 border border-destructive/30 flex flex-col items-center justify-center text-center space-y-4">
           <AlertTriangle className="w-12 h-12 text-destructive" />
-          <div className="max-w-md space-y-1">
+          <div className="max-w-md space-y-2">
+            <span className="inline-block px-2.5 py-0.5 text-[9px] uppercase tracking-widest font-mono font-semibold bg-destructive/20 text-destructive border border-destructive/40">
+              {error.categoryLabel}
+            </span>
             <h3 className="font-semibold text-lg text-foreground font-serif">Unable to Load Overview Summary</h3>
-            <p className="text-xs text-muted-foreground">{error}</p>
+            <p className="text-xs text-muted-foreground">{error.message}</p>
+            {error.details && (
+              <p className="text-[11px] font-mono text-muted-foreground/80 bg-background/50 p-2 border border-border mt-2 break-all text-left">
+                {error.details}
+              </p>
+            )}
           </div>
           <button
             onClick={fetchOverview}
@@ -332,7 +489,7 @@ export const DashboardShell: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-[10px] font-mono px-2 py-0.5 border border-border bg-background">
-                        {Math.round(prod.quality_score)}%
+                        {Math.round(Number(prod.quality_score) || 0)}%
                       </span>
                       <span className="text-[9px] uppercase tracking-widest px-2 py-0.5 border border-border bg-accent text-foreground">
                         {prod.status}
@@ -371,7 +528,7 @@ export const DashboardShell: React.FC = () => {
                     <div className="min-w-0 space-y-0.5">
                       <div className="text-xs font-medium text-foreground truncate">{doc.filename}</div>
                       <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
-                        <span>{formatApiDateTime(doc.created_at)}</span>
+                        <span>{doc.created_at ? formatApiDateTime(doc.created_at) : '-'}</span>
                         {doc.page_count && <span>• {doc.page_count} pages</span>}
                       </div>
                     </div>
