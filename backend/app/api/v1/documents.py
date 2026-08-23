@@ -1,7 +1,9 @@
 import uuid
 import json
-from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Form
+import logging
+from datetime import datetime, timezone
+from typing import List, Optional, Dict, Any, Tuple
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Form, BackgroundTasks
 from sqlmodel import Session
 from pydantic import BaseModel
 
@@ -11,7 +13,61 @@ from app.repositories import DocumentRepository
 from app.services.document import DocumentService
 from app.services.storage import get_storage_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/documents")
+
+def process_batch_background(batch_id: uuid.UUID, items_to_process: List[Tuple[uuid.UUID, uuid.UUID, uuid.UUID]]):
+    """
+    Executes in-process background processing for staged documents with fresh database sessions.
+    items_to_process: List of (document_id, job_id, step_id)
+    """
+    from app.db.session import engine, get_session
+    from app.main import app
+    from app.models import Document, ProcessingJob, ProcessingStep, DocumentStatus, JobStatus, StepStatus
+    from app.services.document import DocumentService
+    from app.services.batch import BatchService
+
+    def get_bg_session() -> Session:
+        if app.dependency_overrides.get(get_session):
+            override = app.dependency_overrides[get_session]
+            res = override()
+            if hasattr(res, "__next__"):
+                return next(res)
+            return res
+        return Session(engine)
+
+    for doc_id, job_id, step_id in items_to_process:
+        try:
+            with get_bg_session() as session:
+                doc_service = DocumentService(session)
+                doc_service.process_document_inline(doc_id, job_id, step_id)
+        except Exception as e:
+            logger.error(f"Background document processing failed for doc {doc_id}: {e}", exc_info=True)
+            try:
+                with get_bg_session() as session:
+                    doc = session.get(Document, doc_id)
+                    job = session.get(ProcessingJob, job_id)
+                    step = session.get(ProcessingStep, step_id)
+                    now = datetime.now(timezone.utc)
+                    if doc:
+                        doc.status = DocumentStatus.failed
+                        doc.updated_at = now
+                        session.add(doc)
+                    if job:
+                        job.status = JobStatus.failed
+                        job.error_message = str(e)[:500]
+                        job.completed_at = now
+                        session.add(job)
+                    if step:
+                        step.status = StepStatus.failed
+                        step.error_message = str(e)[:500]
+                        step.completed_at = now
+                        session.add(step)
+                    session.commit()
+                    BatchService(session).update_batch_progress(batch_id)
+            except Exception as inner_err:
+                logger.error(f"Failed to record background failure: {inner_err}")
 
 # Typed upload response
 class UploadResponse(BaseModel):
@@ -52,6 +108,7 @@ class BatchDocumentStatusResponse(BaseModel):
     document_id: Optional[uuid.UUID] = None
     filename: str
     status: str
+    stage: Optional[str] = None
     job_id: Optional[uuid.UUID] = None
     mime_type: Optional[str] = None
     file_size: Optional[int] = None
@@ -135,6 +192,7 @@ def get_document(document_id: uuid.UUID, session: Session = Depends(get_session)
 
 @router.post("/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
 def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session: Session = Depends(get_session)
 ):
@@ -144,8 +202,15 @@ def upload_document(
         res = service.upload_document(
             file_content=file_content,
             filename=file.filename,
-            mime_type=file.content_type or "application/octet-stream"
+            mime_type=file.content_type or "application/octet-stream",
+            process_inline=False
         )
+        if res.get("needs_processing") and res.get("step_id"):
+            background_tasks.add_task(
+                process_batch_background,
+                res.get("batch_id") or res["document_id"],
+                [(res["document_id"], res["job_id"], res["step_id"])]
+            )
         return UploadResponse(
             document_id=res["document_id"],
             job_id=res.get("job_id"),
@@ -167,11 +232,18 @@ def upload_document(
 @router.post("/{document_id}/reprocess", response_model=ReprocessResponse)
 def reprocess_document(
     document_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session)
 ):
     service = DocumentService(session)
     try:
-        res = service.force_reprocess(document_id)
+        res = service.force_reprocess(document_id, process_inline=False)
+        if res.get("needs_processing") and res.get("step_id"):
+            background_tasks.add_task(
+                process_batch_background,
+                res.get("batch_id") or res["document_id"],
+                [(res["document_id"], res["job_id"], res["step_id"])]
+            )
         return ReprocessResponse(
             document_id=res["document_id"],
             job_id=res["job_id"],
@@ -311,6 +383,7 @@ def get_extracted_document(
 
 @router.post("/upload-batch", response_model=BatchUploadResponse, status_code=status.HTTP_201_CREATED)
 def upload_batch(
+    background_tasks: BackgroundTasks,
     files: Optional[List[UploadFile]] = File(None),
     zip_file: Optional[UploadFile] = File(None),
     batch_name: Optional[str] = Form(None),
@@ -321,19 +394,33 @@ def upload_batch(
     try:
         if zip_file:
             zip_bytes = zip_file.file.read()
-            res = service.create_batch_from_zip(zip_bytes, zip_file.filename)
+            res = service.create_batch_from_zip(zip_bytes, zip_file.filename, process_inline=False)
         elif files:
             file_tuples = []
             for f in files:
                 content = f.file.read()
                 file_tuples.append((f.filename, content, f.content_type or "application/octet-stream"))
-            res = service.create_batch_from_files(file_tuples, batch_name=batch_name)
+            res = service.create_batch_from_files(file_tuples, batch_name=batch_name, process_inline=False)
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Either 'files' (multi-file) or 'zip_file' must be provided."
             )
-        return BatchUploadResponse(**res)
+
+        items_to_process = res.get("items_to_process", [])
+        if items_to_process:
+            background_tasks.add_task(process_batch_background, res["batch_id"], items_to_process)
+
+        return BatchUploadResponse(
+            batch_id=res["batch_id"],
+            batch_name=res.get("batch_name"),
+            status=res["status"],
+            total_files=res["total_files"],
+            accepted_count=res["accepted_count"],
+            rejected_count=res["rejected_count"],
+            documents=res["documents"],
+            rejected=res["rejected"]
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

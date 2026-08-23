@@ -24,7 +24,8 @@ class BatchService:
     def create_batch_from_files(
         self,
         files: List[Tuple[str, bytes, str]],  # List of (filename, file_content, mime_type)
-        batch_name: Optional[str] = None
+        batch_name: Optional[str] = None,
+        process_inline: bool = True
     ) -> Dict[str, Any]:
         """
         Creates a new IngestionBatch and registers multiple uploaded files under it.
@@ -52,6 +53,7 @@ class BatchService:
 
         document_results = []
         rejected_files = []
+        items_to_process = []
 
         for filename, content, mime in files:
             try:
@@ -60,7 +62,8 @@ class BatchService:
                     file_content=content,
                     filename=filename,
                     mime_type=mime,
-                    batch_id=batch_id
+                    batch_id=batch_id,
+                    process_inline=process_inline
                 )
                 document_results.append({
                     "filename": filename,
@@ -69,6 +72,8 @@ class BatchService:
                     "status": res["status"],
                     "cached": res.get("cached", False)
                 })
+                if res.get("needs_processing") and res.get("step_id"):
+                    items_to_process.append((res["document_id"], res["job_id"], res["step_id"]))
             except Exception as e:
                 logger.warning(f"File '{filename}' in batch {batch_id} failed ingestion: {e}")
                 rejected_files.append({
@@ -99,10 +104,11 @@ class BatchService:
             "accepted_count": len(document_results),
             "rejected_count": len(rejected_files),
             "documents": document_results,
-            "rejected": rejected_files
+            "rejected": rejected_files,
+            "items_to_process": items_to_process
         }
 
-    def create_batch_from_zip(self, zip_content: bytes, filename: str) -> Dict[str, Any]:
+    def create_batch_from_zip(self, zip_content: bytes, filename: str, process_inline: bool = True) -> Dict[str, Any]:
         """
         Unpacks a ZIP archive safely with bounded memory consumption and security checks:
         - Archive size limit (MAX_ARCHIVE_SIZE_MB)
@@ -138,41 +144,43 @@ class BatchService:
 
         # Filter valid target entries and check uncompressed size ceilings
         valid_members = []
-        cumulative_extracted = 0
+        total_uncompressed = 0
 
         for member in infolist:
-            if member.is_dir() or member.filename.startswith("__MACOSX") or os.path.basename(member.filename).startswith("."):
+            # Skip directory entries
+            if member.is_dir() or member.filename.endswith("/"):
                 continue
 
-            file_basename = os.path.basename(member.filename)
+            # Path traversal safety check
+            norm_name = os.path.normpath(member.filename)
+            if norm_name.startswith("..") or os.path.isabs(norm_name) or norm_name.startswith("/") or norm_name.startswith("\\"):
+                logger.warning(f"Ignoring insecure ZIP entry path: {member.filename}")
+                continue
+
+            file_basename = os.path.basename(norm_name)
+            if not file_basename or file_basename.startswith(".") or file_basename.startswith("__MACOSX"):
+                continue
+
             _, ext = os.path.splitext(file_basename.lower())
-
-            # Path traversal / absolute path check
-            if ".." in member.filename or member.filename.startswith("/") or (len(member.filename) > 1 and member.filename[1] == ":"):
-                logger.warning(f"Path traversal attempt blocked in ZIP member: {member.filename}")
+            if ext not in SUPPORTED_DOCUMENT_EXTENSIONS:
+                logger.debug(f"Skipping unsupported file in ZIP: {file_basename}")
                 continue
 
-            # Nested zip check
-            if ext == ".zip":
-                logger.warning(f"Nested ZIP member skipped: {member.filename}")
-                continue
+            # Single member size check
+            if member.file_size > max_single_bytes:
+                raise ValueError(f"File '{file_basename}' uncompressed size exceeds limit of {settings.MAX_ARCHIVE_FILE_SIZE_MB}MB")
 
-            if ext in SUPPORTED_DOCUMENT_EXTENSIONS:
-                if member.file_size > max_single_bytes:
-                    raise ValueError(f"File '{file_basename}' inside ZIP exceeds max file size of {settings.MAX_ARCHIVE_FILE_SIZE_MB}MB")
+            total_uncompressed += member.file_size
+            if total_uncompressed > max_extracted_bytes:
+                raise ValueError(f"Total extracted ZIP size exceeds limit of {settings.MAX_ARCHIVE_EXTRACTED_SIZE_MB}MB")
 
-                cumulative_extracted += member.file_size
-                if cumulative_extracted > max_extracted_bytes:
-                    raise ValueError(f"ZIP cumulative extracted size exceeds limit of {settings.MAX_ARCHIVE_EXTRACTED_SIZE_MB}MB")
-
-                valid_members.append((member, file_basename, ext))
+            valid_members.append((member, file_basename, ext))
 
         if not valid_members:
-            raise ValueError("No supported document files found inside ZIP archive")
+            raise ValueError("No supported document files found in the uploaded ZIP archive")
 
         batch_id = uuid.uuid4()
-        batch_label = os.path.splitext(filename)[0]
-        batch_name = f"ZIP_{batch_label}"
+        batch_name = f"ZIP_{os.path.splitext(filename)[0]}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
         batch = IngestionBatch(
             id=batch_id,
@@ -189,6 +197,7 @@ class BatchService:
 
         document_results = []
         rejected_files = []
+        items_to_process = []
 
         # 3. Stream and process members ONE BY ONE (Memory Bounded)
         for member, file_basename, ext in valid_members:
@@ -199,7 +208,8 @@ class BatchService:
                     file_content=content,
                     filename=file_basename,
                     mime_type=mime,
-                    batch_id=batch_id
+                    batch_id=batch_id,
+                    process_inline=process_inline
                 )
                 document_results.append({
                     "filename": file_basename,
@@ -208,6 +218,8 @@ class BatchService:
                     "status": res["status"],
                     "cached": res.get("cached", False)
                 })
+                if res.get("needs_processing") and res.get("step_id"):
+                    items_to_process.append((res["document_id"], res["job_id"], res["step_id"]))
             except Exception as e:
                 logger.warning(f"File '{file_basename}' in ZIP batch {batch_id} failed ingestion: {e}")
                 rejected_files.append({
@@ -238,7 +250,8 @@ class BatchService:
             "accepted_count": len(document_results),
             "rejected_count": len(rejected_files),
             "documents": document_results,
-            "rejected": rejected_files
+            "rejected": rejected_files,
+            "items_to_process": items_to_process
         }
 
     def get_batch_status(self, batch_id: uuid.UUID) -> Dict[str, Any]:
@@ -264,15 +277,23 @@ class BatchService:
         doc_statuses = []
         for item in items:
             doc = self.session.get(Document, item.document_id) if item.document_id else None
+            job = self.session.get(ProcessingJob, item.job_id) if item.job_id else None
+            
+            # Determine live status and stage
+            live_status = (doc.status.value if hasattr(doc.status, "value") else str(doc.status)) if doc else (item.status.value if hasattr(item.status, "value") else str(item.status))
+            current_stage = (job.current_stage if job else None) or (doc.status.value if hasattr(doc.status, "value") else str(doc.status)) if doc else None
+            err = item.error_message or (job.error_message if job else None)
+
             doc_statuses.append({
                 "document_id": item.document_id,
                 "filename": doc.filename if doc else "Document",
-                "status": item.status,
+                "status": live_status,
+                "stage": current_stage,
                 "job_id": item.job_id,
                 "mime_type": doc.mime_type if doc else None,
                 "file_size": doc.file_size if doc else None,
                 "cached": item.cached,
-                "error_message": item.error_message,
+                "error_message": err,
                 "updated_at": item.updated_at
             })
 

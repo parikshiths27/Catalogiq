@@ -4,6 +4,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   UploadCloud,
   AlertTriangle,
+  AlertCircle,
+  CheckCircle2,
+  Clock,
   FileText,
   Loader2,
   FolderPlus,
@@ -13,7 +16,14 @@ import {
   X,
   FileCode,
   Sparkles,
-  Database
+  Database,
+  FileSearch,
+  Cpu,
+  Wand2,
+  ShieldCheck,
+  ChevronDown,
+  ChevronUp,
+  RotateCcw
 } from 'lucide-react';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import { apiUrl } from '../../lib/api';
@@ -22,6 +32,7 @@ interface BatchDocumentStatus {
   document_id: string | null;
   filename: string;
   status: string;
+  stage?: string | null;
   job_id: string | null;
   mime_type?: string | null;
   file_size?: number | null;
@@ -51,6 +62,108 @@ interface RejectedFileResult {
   error: string;
 }
 
+interface PipelineStageDefinition {
+  id: string;
+  number: string;
+  name: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const PIPELINE_STAGES: PipelineStageDefinition[] = [
+  {
+    id: 'parsing',
+    number: 'Stage 01',
+    name: 'Raw Multi-Format Ingestion',
+    description: 'Docling & multi-format parser ingest PDF, Excel, CSV, Word, XML, JSON, HTML',
+    icon: FileSearch,
+  },
+  {
+    id: 'extracting',
+    number: 'Stage 02',
+    name: 'Normalized Attributes',
+    description: 'Tabular & semantic attribute extraction, confidence scoring, UOM normalization',
+    icon: Cpu,
+  },
+  {
+    id: 'enriching',
+    number: 'Stage 03',
+    name: 'AI Commerce Enrichment',
+    description: 'Autonomous 5-channel commercial copy, bullet features, and SEO metadata generation',
+    icon: Wand2,
+  },
+  {
+    id: 'validating',
+    number: 'Stage 04',
+    name: 'Evidence Audit & Provenance',
+    description: 'Verbatim OEM citation mapping, quality scoring, conflict detection, 252-col delivery index',
+    icon: ShieldCheck,
+  },
+];
+
+type StageStatusType = 'queued' | 'processing' | 'completed' | 'failed';
+
+function getStageStatus(
+  stageId: string,
+  docStatus: string,
+  docStage?: string | null
+): { status: StageStatusType; isCurrent: boolean } {
+  const s = (docStage || docStatus || '').toLowerCase();
+
+  if (s === 'failed') {
+    if (docStage === stageId) {
+      return { status: 'failed', isCurrent: true };
+    }
+    if (stageId === 'parsing') return { status: 'completed', isCurrent: false };
+    if (stageId === 'extracting' && (docStage === 'validating' || docStage === 'enriching')) return { status: 'completed', isCurrent: false };
+    if (stageId === 'enriching' && docStage === 'validating') return { status: 'completed', isCurrent: false };
+    return { status: 'failed', isCurrent: false };
+  }
+
+  if (s === 'processed' || s === 'completed' || s === 'already_processed') {
+    return { status: 'completed', isCurrent: false };
+  }
+
+  if (stageId === 'parsing') {
+    if (s === 'uploaded' || s === 'queued' || s === 'parsing') {
+      return { status: 'processing', isCurrent: true };
+    }
+    return { status: 'completed', isCurrent: false };
+  }
+
+  if (stageId === 'extracting') {
+    if (s === 'uploaded' || s === 'queued' || s === 'parsing') {
+      return { status: 'queued', isCurrent: false };
+    }
+    if (s === 'extracting' || s === 'normalizing') {
+      return { status: 'processing', isCurrent: true };
+    }
+    return { status: 'completed', isCurrent: false };
+  }
+
+  if (stageId === 'enriching') {
+    if (s === 'uploaded' || s === 'queued' || s === 'parsing' || s === 'extracting' || s === 'normalizing') {
+      return { status: 'queued', isCurrent: false };
+    }
+    if (s === 'enriching') {
+      return { status: 'processing', isCurrent: true };
+    }
+    return { status: 'completed', isCurrent: false };
+  }
+
+  if (stageId === 'validating') {
+    if (s === 'validating') {
+      return { status: 'processing', isCurrent: true };
+    }
+    if (s === 'processed' || s === 'completed') {
+      return { status: 'completed', isCurrent: false };
+    }
+    return { status: 'queued', isCurrent: false };
+  }
+
+  return { status: 'queued', isCurrent: false };
+}
+
 const SUPPORTED_FORMATS = [
   { label: 'PDF', ext: '.pdf', icon: FileText },
   { label: 'Excel', ext: '.xlsx', icon: FileSpreadsheet },
@@ -75,13 +188,14 @@ export const UploadShell: React.FC = () => {
   const [batchId, setBatchId] = useState<string | null>(null);
   const [batchDetail, setBatchDetail] = useState<BatchDetail | null>(null);
   const [rejectedUploads, setRejectedUploads] = useState<RejectedFileResult[]>([]);
+  const [expandedDocs, setExpandedDocs] = useState<Record<string, boolean>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
   const queryClient = useQueryClient();
 
-  // Poll batch status every 1.5s until terminal state
+  // Poll batch status every 1.2s until terminal state
   useEffect(() => {
     if (!batchId) return;
 
@@ -92,7 +206,7 @@ export const UploadShell: React.FC = () => {
         const data: BatchDetail = await res.json();
         setBatchDetail(data);
 
-        // Terminal state reached
+        // Terminal state reached: stop polling and invalidate application queries
         if (['completed', 'partially_completed', 'failed', 'cancelled'].includes(data.status.toLowerCase())) {
           clearInterval(intervalId);
           queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
@@ -107,7 +221,7 @@ export const UploadShell: React.FC = () => {
     };
 
     pollBatch();
-    const intervalId = setInterval(pollBatch, 1500);
+    const intervalId = setInterval(pollBatch, 1200);
     return () => clearInterval(intervalId);
   }, [batchId, queryClient]);
 
@@ -167,13 +281,19 @@ export const UploadShell: React.FC = () => {
     setError(null);
   };
 
+  const toggleDocExpanded = (key: string) => {
+    setExpandedDocs(prev => ({
+      ...prev,
+      [key]: prev[key] === undefined ? false : !prev[key]
+    }));
+  };
+
   const handleStartBatchUpload = async () => {
     if (selectedFiles.length === 0) return;
 
     setUploading(true);
     setError(null);
     setRejectedUploads([]);
-    setBatchDetail(null);
 
     if (resetCatalogFirst) {
       try {
@@ -200,6 +320,36 @@ export const UploadShell: React.FC = () => {
       }
 
       const result = await res.json();
+
+      // Immediately build initial batch state and transition UI
+      const initialBatchDetail: BatchDetail = {
+        batch_id: result.batch_id,
+        name: result.batch_name || 'Batch Ingestion',
+        status: result.status || 'processing',
+        total_files: result.total_files || selectedFiles.length,
+        processed_files: 0,
+        completed_files: 0,
+        failed_files: 0,
+        processing_files: result.accepted_count || selectedFiles.length,
+        progress_percentage: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        completed_at: null,
+        documents: (result.documents || []).map((doc: any) => ({
+          document_id: doc.document_id,
+          filename: doc.filename,
+          status: doc.status || 'queued',
+          stage: 'parsing',
+          job_id: doc.job_id,
+          mime_type: null,
+          file_size: null,
+          cached: doc.cached || false,
+          error_message: null,
+          updated_at: new Date().toISOString(),
+        }))
+      };
+
+      setBatchDetail(initialBatchDetail);
       setBatchId(result.batch_id);
 
       if (result.rejected_files && result.rejected_files.length > 0) {
@@ -218,6 +368,7 @@ export const UploadShell: React.FC = () => {
     setSelectedFiles([]);
     setRejectedUploads([]);
     setError(null);
+    setExpandedDocs({});
   };
 
   const isTerminalBatch = batchDetail && ['completed', 'partially_completed', 'failed'].includes(batchDetail.status.toLowerCase());
@@ -423,7 +574,7 @@ export const UploadShell: React.FC = () => {
           )}
         </div>
       ) : (
-        /* Active Batch Progress Dashboard */
+        /* Active Batch Progress Dashboard with Live Processing Pipeline */
         <div className="space-y-6">
           <div className="p-6 border border-border bg-card space-y-6 rounded-none">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -437,7 +588,7 @@ export const UploadShell: React.FC = () => {
                   </span>
                 </div>
                 <h2 className="text-2xl font-serif font-normal text-foreground">
-                  {batchDetail ? `${batchDetail.progress_percentage}% Completed` : 'Initializing Batch...'}
+                  {batchDetail ? `${batchDetail.progress_percentage}% Completed` : 'Initializing Pipeline...'}
                 </h2>
               </div>
 
@@ -446,9 +597,10 @@ export const UploadShell: React.FC = () => {
                   <>
                     <button
                       onClick={resetAll}
-                      className="h-10 px-5 border border-border bg-background text-xs uppercase tracking-widest font-medium text-muted-foreground hover:text-foreground hover:bg-card transition"
+                      className="h-10 px-5 border border-border bg-background text-xs uppercase tracking-widest font-medium text-muted-foreground hover:text-foreground hover:bg-card transition flex items-center gap-2"
                     >
-                      New Import
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>New Import</span>
                     </button>
                     <Link
                       to="/catalog"
@@ -461,7 +613,7 @@ export const UploadShell: React.FC = () => {
                 ) : (
                   <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[#9B8F77] animate-pulse">
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Processing Ingestion Stages...</span>
+                    <span>Live Processing Pipeline...</span>
                   </div>
                 )}
               </div>
@@ -477,7 +629,7 @@ export const UploadShell: React.FC = () => {
               </div>
               <div className="flex justify-between text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
                 <span>
-                  {batchDetail ? `${batchDetail.completed_files} of ${batchDetail.total_files} completed` : '0 files'}
+                  {batchDetail ? `${batchDetail.completed_files} of ${batchDetail.total_files} items completed` : '0 files'}
                 </span>
                 <span>{batchDetail?.failed_files ?? 0} failed</span>
               </div>
@@ -522,34 +674,151 @@ export const UploadShell: React.FC = () => {
             </div>
           )}
 
-          {/* Per-Document Processing Cards */}
-          <div className="p-6 border border-border bg-card space-y-4 rounded-none">
-            <h3 className="font-serif text-lg font-normal text-foreground flex items-center gap-2">
-              <Layers className="w-4 h-4 text-[#9B8F77]" />
-              <span>Document Processing Items ({batchDetail?.documents.length ?? 0})</span>
-            </h3>
+          {/* Live Document Processing Pipeline Cards */}
+          <div className="p-6 border border-border bg-card space-y-6 rounded-none">
+            <div className="flex items-center justify-between">
+              <h3 className="font-serif text-lg font-normal text-foreground flex items-center gap-2">
+                <Layers className="w-4 h-4 text-[#9B8F77]" />
+                <span>Live Processing Pipeline ({batchDetail?.documents.length ?? 0})</span>
+              </h3>
+              <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+                Stage 01 → Stage 04 Autonomous Flow
+              </span>
+            </div>
 
-            <div className="divide-y divide-border">
-              {(batchDetail?.documents ?? []).map((doc, idx) => (
-                <div key={`${doc.filename}-${idx}`} className="py-3 flex items-center justify-between gap-4">
-                  <div className="min-w-0 space-y-0.5">
-                    <div className="text-xs font-medium text-foreground truncate flex items-center gap-2">
-                      <span>{doc.filename}</span>
-                      {doc.cached && (
-                        <span className="text-[9px] font-mono uppercase tracking-widest px-1.5 py-0.5 border border-border bg-background text-[#9B8F77]">
-                          Cached / Deduplicated
-                        </span>
-                      )}
+            <div className="space-y-4">
+              {(batchDetail?.documents ?? []).map((doc, idx) => {
+                const docKey = `${doc.filename}-${idx}`;
+                const isExpanded = expandedDocs[docKey] !== false; // Default expanded
+
+                return (
+                  <div
+                    key={docKey}
+                    className="border border-border bg-background/50 rounded-none p-4 space-y-3 transition"
+                  >
+                    {/* Document Item Header */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/60 pb-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 border border-border bg-card flex items-center justify-center text-[#9B8F77] shrink-0">
+                          <FileText className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-foreground truncate flex items-center gap-2">
+                            <span>{doc.filename}</span>
+                            {doc.cached && (
+                              <span className="text-[8px] font-mono uppercase tracking-widest px-1.5 py-0.5 border border-[#9B8F77]/40 bg-[#9B8F77]/10 text-[#9B8F77]">
+                                Cached
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground font-mono">
+                            {doc.document_id ? `DOC: ${doc.document_id.slice(0, 8)}...` : 'Staging'}
+                            {doc.file_size ? ` • ${(doc.file_size / 1024).toFixed(1)} KB` : ''}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3 shrink-0">
+                        <StatusBadge status={doc.status} size="sm" />
+                        <button
+                          type="button"
+                          onClick={() => toggleDocExpanded(docKey)}
+                          className="p-1 text-muted-foreground hover:text-foreground transition"
+                          title={isExpanded ? "Collapse Pipeline" : "Expand Pipeline"}
+                        >
+                          {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </button>
+                      </div>
                     </div>
-                    <div className="text-[10px] text-muted-foreground font-mono">
-                      {doc.document_id ? `ID: ${doc.document_id.slice(0, 8)}...` : 'Rejected'}
-                    </div>
+
+                    {/* 4-Stage Pipeline Grid */}
+                    {isExpanded && (
+                      <div className="space-y-3 pt-1">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                          {PIPELINE_STAGES.map((stageDef) => {
+                            const { status: stageStatus } = getStageStatus(
+                              stageDef.id,
+                              doc.status,
+                              doc.stage
+                            );
+                            const StageIcon = stageDef.icon;
+
+                            return (
+                              <div
+                                key={stageDef.id}
+                                className={`p-3 border rounded-none transition-all flex flex-col justify-between min-h-[130px] ${
+                                  stageStatus === 'completed'
+                                    ? 'border-emerald-500/40 bg-emerald-500/[0.03]'
+                                    : stageStatus === 'processing'
+                                    ? 'border-[#9B8F77] bg-[#9B8F77]/[0.06] shadow-sm'
+                                    : stageStatus === 'failed'
+                                    ? 'border-destructive/60 bg-destructive/10'
+                                    : 'border-border/60 bg-card/40 opacity-70'
+                                }`}
+                              >
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between text-[9px] font-mono uppercase tracking-widest">
+                                    <span className={stageStatus === 'processing' ? 'text-[#9B8F77] font-semibold' : 'text-muted-foreground'}>
+                                      {stageDef.number}
+                                    </span>
+                                    {stageStatus === 'completed' ? (
+                                      <span className="flex items-center gap-1 text-emerald-500 font-semibold">
+                                        <CheckCircle2 className="w-3 h-3" />
+                                        <span>Done</span>
+                                      </span>
+                                    ) : stageStatus === 'processing' ? (
+                                      <span className="flex items-center gap-1 text-[#9B8F77] font-semibold animate-pulse">
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        <span>Active</span>
+                                      </span>
+                                    ) : stageStatus === 'failed' ? (
+                                      <span className="flex items-center gap-1 text-destructive font-semibold">
+                                        <AlertCircle className="w-3 h-3" />
+                                        <span>Failed</span>
+                                      </span>
+                                    ) : (
+                                      <span className="flex items-center gap-1 text-muted-foreground/60 font-light">
+                                        <Clock className="w-3 h-3" />
+                                        <span>Queued</span>
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-start gap-1.5">
+                                    <StageIcon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${
+                                      stageStatus === 'completed' ? 'text-emerald-500' :
+                                      stageStatus === 'processing' ? 'text-[#9B8F77]' :
+                                      stageStatus === 'failed' ? 'text-destructive' : 'text-muted-foreground'
+                                    }`} />
+                                    <h4 className="text-xs font-serif font-normal text-foreground leading-tight">
+                                      {stageDef.name}
+                                    </h4>
+                                  </div>
+                                </div>
+
+                                <p className="text-[9px] uppercase tracking-wider text-muted-foreground line-clamp-2 leading-relaxed mt-2 font-light">
+                                  {stageDef.description}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Exact Backend Error Display if Failed */}
+                        {doc.error_message && (
+                          <div className="p-3 border border-destructive/50 bg-destructive/10 flex items-start gap-2.5 text-xs text-destructive rounded-none mt-2">
+                            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                            <div className="space-y-0.5 min-w-0">
+                              <div className="font-semibold uppercase tracking-wider text-[10px]">Processing Pipeline Failure</div>
+                              <div className="font-mono text-[11px] break-words text-foreground/90">{doc.error_message}</div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="shrink-0">
-                    <StatusBadge status={doc.status} size="sm" />
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

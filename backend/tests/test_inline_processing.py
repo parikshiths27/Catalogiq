@@ -212,11 +212,13 @@ def test_upload_api_inline_mode(inline_db_session: Session, monkeypatch):
         )
         assert res.status_code == 201
         data = res.json()
-        assert data["status"] == "completed"
+        assert data["status"] in ("processing", "queued", "completed")
         assert data["total_files"] == 1
         assert data["accepted_count"] == 1
+        assert len(data["documents"]) == 1
+        assert data["documents"][0]["status"] in ("queued", "processing", "completed")
 
-        # Check batch endpoint immediately returns completed
+        # Check batch endpoint returns batch and stage details
         batch_id = data["batch_id"]
         b_res = client.get(f"/api/v1/documents/batches/{batch_id}")
         assert b_res.status_code == 200
@@ -224,6 +226,8 @@ def test_upload_api_inline_mode(inline_db_session: Session, monkeypatch):
         assert b_data["status"] == "completed"
         assert b_data["progress_percentage"] == 100.0
         assert b_data["completed_files"] == 1
+        assert len(b_data["documents"]) == 1
+        assert b_data["documents"][0]["stage"] is not None
 
         # Check product created and accessible via Products API
         p_res = client.get("/api/v1/products?limit=10")

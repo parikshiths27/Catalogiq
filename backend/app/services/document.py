@@ -56,7 +56,8 @@ class DocumentService:
         file_content: bytes,
         filename: str,
         mime_type: str,
-        batch_id: Optional[uuid.UUID] = None
+        batch_id: Optional[uuid.UUID] = None,
+        process_inline: bool = True
     ) -> Dict[str, Any]:
         """
         Ingests a document, performs duplicate detection, saves it to storage,
@@ -95,7 +96,7 @@ class DocumentService:
         # Check for existing document in database
         existing_doc = self.doc_repo.get_by_file_hash(file_hash)
         if existing_doc:
-            return self._handle_existing_document(existing_doc, batch_id=batch_id)
+            return self._handle_existing_document(existing_doc, batch_id=batch_id, process_inline=process_inline)
 
         # If new, create document, job, and step within a transaction block
         doc_id = uuid.uuid4()
@@ -162,7 +163,7 @@ class DocumentService:
                 pass
             winner_doc = self.doc_repo.get_by_file_hash(file_hash)
             if winner_doc:
-                return self._handle_existing_document(winner_doc, batch_id=batch_id)
+                return self._handle_existing_document(winner_doc, batch_id=batch_id, process_inline=process_inline)
             raise
 
         self.session.refresh(document)
@@ -172,16 +173,29 @@ class DocumentService:
         BatchService(self.session).update_batch_progress(batch_id)
 
         if settings.PROCESSING_MODE.lower() == "inline":
-            self.process_document_inline(document.id, job.id, step.id)
-            self.session.refresh(document)
-            self.session.refresh(job)
-            return {
-                "document_id": document.id,
-                "job_id": job.id,
-                "batch_id": batch_id,
-                "status": document.status.value if hasattr(document.status, "value") else str(document.status),
-                "cached": False
-            }
+            if process_inline:
+                self.process_document_inline(document.id, job.id, step.id)
+                self.session.refresh(document)
+                self.session.refresh(job)
+                return {
+                    "document_id": document.id,
+                    "job_id": job.id,
+                    "step_id": step.id,
+                    "batch_id": batch_id,
+                    "status": document.status.value if hasattr(document.status, "value") else str(document.status),
+                    "cached": False,
+                    "needs_processing": False
+                }
+            else:
+                return {
+                    "document_id": document.id,
+                    "job_id": job.id,
+                    "step_id": step.id,
+                    "batch_id": batch_id,
+                    "status": "queued",
+                    "cached": False,
+                    "needs_processing": True
+                }
         else:
             # Trigger Celery worker task execution with inline fallback
             from app.workers.tasks.document_processing import process_document_task
@@ -194,9 +208,11 @@ class DocumentService:
             return {
                 "document_id": document.id,
                 "job_id": job.id,
+                "step_id": step.id,
                 "batch_id": batch_id,
                 "status": "queued",
-                "cached": False
+                "cached": False,
+                "needs_processing": False
             }
 
     def process_document_inline(
@@ -365,10 +381,15 @@ class DocumentService:
             self.session.commit()
             _update_batch_progress_if_needed(self.session, doc, error_message=str(enrich_err)[:500])
 
-    def force_reprocess(self, document_id: uuid.UUID) -> Dict[str, Any]:
+    def force_reprocess(
+        self,
+        document_id: uuid.UUID,
+        process_inline: bool = True
+    ) -> Dict[str, Any]:
         """
-        Creates a new ProcessingJob and ProcessingStep, forcing reprocessing of an
-        existing document, preserving all historical jobs/steps in the process log.
+        Forces a full document reprocessing workflow by wiping all downstream entities
+        (Product, Attributes, Evidence, ValidationResults, and ProcessingSteps) and
+        dispatching the parsing task anew.
         """
         document = self.doc_repo.get_by_id(document_id)
         if not document:
@@ -415,15 +436,27 @@ class DocumentService:
         self.session.commit()
 
         if settings.PROCESSING_MODE.lower() == "inline":
-            self.process_document_inline(document.id, job.id, step.id)
-            self.session.refresh(document)
-            self.session.refresh(job)
-            return {
-                "document_id": document.id,
-                "job_id": job.id,
-                "status": document.status.value if hasattr(document.status, "value") else str(document.status),
-                "reprocessed": True
-            }
+            if process_inline:
+                self.process_document_inline(document.id, job.id, step.id)
+                self.session.refresh(document)
+                self.session.refresh(job)
+                return {
+                    "document_id": document.id,
+                    "job_id": job.id,
+                    "step_id": step.id,
+                    "status": document.status.value if hasattr(document.status, "value") else str(document.status),
+                    "reprocessed": True,
+                    "needs_processing": False
+                }
+            else:
+                return {
+                    "document_id": document.id,
+                    "job_id": job.id,
+                    "step_id": step.id,
+                    "status": "queued",
+                    "reprocessed": True,
+                    "needs_processing": True
+                }
         else:
             # Trigger background execution with inline fallback
             from app.workers.tasks.document_processing import process_document_task
@@ -436,11 +469,13 @@ class DocumentService:
             return {
                 "document_id": document.id,
                 "job_id": job.id,
+                "step_id": step.id,
                 "status": "queued",
-                "reprocessed": True
+                "reprocessed": True,
+                "needs_processing": False
             }
 
-    def _handle_existing_document(self, doc: Document, batch_id: uuid.UUID) -> Dict[str, Any]:
+    def _handle_existing_document(self, doc: Document, batch_id: uuid.UUID, process_inline: bool = True) -> Dict[str, Any]:
         """
         Resolves duplicate uploads: returns already completed details, or active job pointer,
         and links an IngestionBatchItem to the batch.
@@ -474,9 +509,11 @@ class DocumentService:
             return {
                 "document_id": doc.id,
                 "job_id": job_id,
+                "step_id": latest_step.id if latest_step else None,
                 "batch_id": batch_id,
                 "status": "already_processed",
-                "cached": True
+                "cached": True,
+                "needs_processing": False
             }
         
         if doc.status in [DocumentStatus.uploaded, DocumentStatus.parsing]:
@@ -500,9 +537,11 @@ class DocumentService:
             return {
                 "document_id": doc.id,
                 "job_id": job_id,
+                "step_id": latest_step.id if latest_step else None,
                 "batch_id": batch_id,
                 "status": "processing",
-                "cached": True
+                "cached": True,
+                "needs_processing": False
             }
 
         # If previous attempt failed, schedule a new job for retry
@@ -549,16 +588,29 @@ class DocumentService:
         BatchService(self.session).update_batch_progress(batch_id)
 
         if settings.PROCESSING_MODE.lower() == "inline":
-            self.process_document_inline(doc.id, job.id, step.id)
-            self.session.refresh(doc)
-            self.session.refresh(job)
-            return {
-                "document_id": doc.id,
-                "job_id": job.id,
-                "batch_id": batch_id,
-                "status": doc.status.value if hasattr(doc.status, "value") else str(doc.status),
-                "cached": True
-            }
+            if process_inline:
+                self.process_document_inline(doc.id, job.id, step.id)
+                self.session.refresh(doc)
+                self.session.refresh(job)
+                return {
+                    "document_id": doc.id,
+                    "job_id": job.id,
+                    "step_id": step.id,
+                    "batch_id": batch_id,
+                    "status": doc.status.value if hasattr(doc.status, "value") else str(doc.status),
+                    "cached": True,
+                    "needs_processing": False
+                }
+            else:
+                return {
+                    "document_id": doc.id,
+                    "job_id": job.id,
+                    "step_id": step.id,
+                    "batch_id": batch_id,
+                    "status": "queued",
+                    "cached": True,
+                    "needs_processing": True
+                }
         else:
             from app.workers.tasks.document_processing import process_document_task
             try:
@@ -570,7 +622,9 @@ class DocumentService:
             return {
                 "document_id": doc.id,
                 "job_id": job.id,
+                "step_id": step.id,
                 "batch_id": batch_id,
                 "status": "queued",
-                "cached": True
+                "cached": True,
+                "needs_processing": False
             }
