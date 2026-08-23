@@ -34,7 +34,7 @@ from app.models import (
 from app.services.embeddings.base import BaseEmbeddingProvider
 from app.services.embeddings.mock_provider import MockEmbeddingProvider
 from app.services.indexing import IndexingService
-from app.services.qdrant import QdrantService
+from app.services.qdrant import QdrantService, get_qdrant_service
 from app.services.search_document import build_qdrant_payload, build_search_document
 
 
@@ -345,6 +345,7 @@ def test_delete_and_reindex_all(session: Session, mock_embedding_provider, qdran
 def test_search_api_endpoint_schema(session: Session, mock_embedding_provider, qdrant_service):
     """Test GET /api/v1/search API endpoint returns compliant SearchResponse schema."""
     fastapi_app.dependency_overrides[get_session] = lambda: session
+    fastapi_app.dependency_overrides[get_qdrant_service] = lambda: qdrant_service
 
     p = Product(
         sku="API-TEST-99",

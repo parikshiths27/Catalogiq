@@ -14,7 +14,7 @@ from app.models import Product
 from app.repositories import AttributeRepository, ProductRepository
 from app.services.embeddings.factory import get_embedding_provider
 from app.services.indexing import IndexingService
-from app.services.qdrant import QdrantService
+from app.services.qdrant import QdrantService, get_qdrant_service
 from app.services.keyword_search import KeywordSearchService, KeywordSearchResponse
 from app.services.hybrid_search import HybridSearchService, HybridSearchResponse
 from app.services.facets import FacetAggregationService, FacetSearchResponse
@@ -70,6 +70,7 @@ def search_products(
     subcategory: Optional[str] = Query(None, description="Filter by subcategory"),
     mode: Optional[str] = Query("semantic", description="Search mode: 'semantic', 'keyword', or 'hybrid'"),
     session: Session = Depends(get_session),
+    qdrant_service: QdrantService = Depends(get_qdrant_service),
 ):
     """
     Search endpoint supporting 'semantic' (default), 'keyword', or 'hybrid' modes.
@@ -120,7 +121,7 @@ def search_products(
         )
 
     # 2. Qdrant Similarity Search
-    qdrant = QdrantService()
+    qdrant = qdrant_service
     filters = {}
     if category:
         filters["category"] = category

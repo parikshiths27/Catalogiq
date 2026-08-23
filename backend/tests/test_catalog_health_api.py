@@ -41,10 +41,10 @@ def test_catalog_health_empty_db(session: Session):
         data = response.json()
 
         # Overall
-        assert data["overall"]["quality_score"] == 0.0
-        assert data["overall"]["completeness_rate"] == 0.0
-        assert data["overall"]["verification_rate"] == 0.0
-        assert data["overall"]["evidence_coverage"] == 0.0
+        assert data["overall"]["quality_score"] is None
+        assert data["overall"]["completeness_rate"] is None
+        assert data["overall"]["verification_rate"] is None
+        assert data["overall"]["evidence_coverage"] is None
         assert data["overall"]["total_products"] == 0
         assert data["overall"]["total_attributes"] == 0
         assert data["overall"]["total_documents"] == 0

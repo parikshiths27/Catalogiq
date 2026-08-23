@@ -174,10 +174,12 @@ def clear_all_products(session: Session = Depends(get_session)):
         session.delete(al)
 
     # 10. CacheEntry
+    cache_count = len(session.exec(sel(CacheEntry)).all())
     for ce in session.exec(sel(CacheEntry)).all():
         session.delete(ce)
 
     # 11. ProcessingStep
+    step_count = len(session.exec(sel(ProcessingStep)).all())
     for s in session.exec(sel(ProcessingStep)).all():
         session.delete(s)
 
@@ -187,6 +189,7 @@ def clear_all_products(session: Session = Depends(get_session)):
         session.delete(j)
 
     # 13. IngestionBatchItem
+    item_count = len(session.exec(sel(IngestionBatchItem)).all())
     for bi in session.exec(sel(IngestionBatchItem)).all():
         session.delete(bi)
 
@@ -217,13 +220,19 @@ def clear_all_products(session: Session = Depends(get_session)):
         "success": True,
         "status": "cleared",
         "products_deleted": prod_count,
-        "documents_deleted": doc_count,
+        "attributes_deleted": attr_count,
+        "validations_deleted": val_count,
         "reviews_deleted": val_count,
         "evidence_deleted": ev_count,
-        "jobs_deleted": job_count,
+        "enrichments_deleted": enr_count,
+        "documents_deleted": doc_count,
         "batches_deleted": batch_count,
+        "batch_items_deleted": item_count,
+        "jobs_deleted": job_count,
+        "steps_deleted": step_count,
         "sources_deleted": src_count,
         "audit_logs_deleted": audit_count,
+        "cache_entries_deleted": cache_count,
         "message": f"Successfully reset catalog and cleared {prod_count} products, {doc_count} documents, and all associated records."
     }
 

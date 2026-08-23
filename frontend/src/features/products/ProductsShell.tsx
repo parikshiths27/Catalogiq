@@ -75,6 +75,8 @@ export const ProductsShell: React.FC = () => {
   const [exportDropdownOpen, setExportDropdownOpen] = useState<boolean>(false);
   const [detailExportDropdownOpen, setDetailExportDropdownOpen] = useState<boolean>(false);
   const [clearingCatalog, setClearingCatalog] = useState<boolean>(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [clearError, setClearError] = useState<string | null>(null);
 
   const exportDropdownRef = useRef<HTMLDivElement>(null);
   const detailExportDropdownRef = useRef<HTMLDivElement>(null);
@@ -113,7 +115,7 @@ export const ProductsShell: React.FC = () => {
     queryKey: ['product-details', activeProductId],
     queryFn: async () => {
       if (!activeProductId) return null;
-      const res = await fetch(apiUrl(`/api/v1/products/${activeProductId}/details`));
+      const res = await fetch(apiUrl(`/api/v1/products/${activeProductId}`));
       if (!res.ok) throw new Error('Failed to fetch product details');
       return res.json();
     },
@@ -121,11 +123,10 @@ export const ProductsShell: React.FC = () => {
     staleTime: 30000,
   });
 
-  const selectedProduct: ProductItem | null =
-    productDetailsData?.product || products.find((p) => p.id === activeProductId) || null;
+  const selectedProduct: ProductItem | null = productDetailsData?.product || null;
   const attributes: ProductAttributeItem[] = productDetailsData?.attributes || [];
   const evidenceList: EvidenceItem[] = productDetailsData?.evidence || [];
-  const validationIssues: any[] = productDetailsData?.validation?.issues || [];
+  const validationIssues: any[] = productDetailsData?.validation_issues || [];
   const validationSummary: any = productDetailsData?.validation || null;
   const enrichmentData: any = productDetailsData?.enrichment || null;
 
@@ -150,23 +151,35 @@ export const ProductsShell: React.FC = () => {
     }
     try {
       setClearingCatalog(true);
+      setClearError(null);
+      setSuccessMessage(null);
       const res = await fetch(apiUrl('/api/v1/products/clear-all'), { method: 'DELETE' });
-      if (res.ok) {
-        queryClient.invalidateQueries({ queryKey: ['products-list'] });
-        queryClient.invalidateQueries({ queryKey: ['product-details'] });
-        queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
-        queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
-        queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
-        queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
-        queryClient.invalidateQueries({ queryKey: ['parsed-document'] });
-        queryClient.invalidateQueries({ queryKey: ['search'] });
-        queryClient.invalidateQueries({ queryKey: ['facets'] });
-        queryClient.invalidateQueries({ queryKey: ['reconciliation'] });
-        queryClient.invalidateQueries({ queryKey: ['sources'] });
-        clearSelection();
+      if (!res.ok) {
+        let errMsg = 'Failed to clear catalog';
+        try {
+          const errData = await res.json();
+          if (errData.detail) errMsg = errData.detail;
+        } catch {}
+        throw new Error(errMsg);
       }
-    } catch (err) {
+      const data = await res.json();
+      setSuccessMessage(data.message || `Successfully reset catalog and cleared ${data.products_deleted ?? 0} products.`);
+      queryClient.setQueryData(['products-list'], []);
+      queryClient.removeQueries({ queryKey: ['product-details'] });
+      queryClient.invalidateQueries({ queryKey: ['products-list'] });
+      queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
+      queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
+      queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
+      queryClient.invalidateQueries({ queryKey: ['parsed-document'] });
+      queryClient.invalidateQueries({ queryKey: ['search'] });
+      queryClient.invalidateQueries({ queryKey: ['facets'] });
+      queryClient.invalidateQueries({ queryKey: ['reconciliation'] });
+      queryClient.invalidateQueries({ queryKey: ['sources'] });
+      clearSelection();
+    } catch (err: any) {
       console.error('Failed to clear catalog:', err);
+      setClearError(err?.message || 'Error resetting catalog');
     } finally {
       setClearingCatalog(false);
     }
@@ -841,6 +854,26 @@ export const ProductsShell: React.FC = () => {
           </Link>
         </div>
       </div>
+
+      {successMessage && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 text-xs rounded-none p-4 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Sparkles className="w-4 h-4 flex-shrink-0" />
+            <span>{successMessage}</span>
+          </div>
+          <button onClick={() => setSuccessMessage(null)} className="text-muted-foreground hover:text-foreground text-xs">Dismiss</button>
+        </div>
+      )}
+
+      {clearError && (
+        <div className="bg-destructive/10 border border-destructive/20 text-destructive text-xs rounded-none p-4 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            <span>{clearError}</span>
+          </div>
+          <button onClick={() => setClearError(null)} className="text-muted-foreground hover:text-foreground text-xs">Dismiss</button>
+        </div>
+      )}
 
       {/* Filter Toolbar */}
       <div className="p-4 border border-border bg-card flex flex-wrap items-center justify-between gap-4 rounded-none">

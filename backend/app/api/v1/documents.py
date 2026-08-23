@@ -164,6 +164,7 @@ def clear_all_documents(session: Session = Depends(get_session)):
         session.delete(j)
 
     # 3. Batch items
+    item_count = len(session.exec(sel(IngestionBatchItem)).all())
     for bi in session.exec(sel(IngestionBatchItem)).all():
         session.delete(bi)
 
@@ -173,6 +174,7 @@ def clear_all_documents(session: Session = Depends(get_session)):
         session.delete(b)
 
     # 5. Product document associations
+    pda_count = len(session.exec(sel(ProductDocumentAssociation)).all())
     for pda in session.exec(sel(ProductDocumentAssociation)).all():
         session.delete(pda)
 
@@ -189,9 +191,11 @@ def clear_all_documents(session: Session = Depends(get_session)):
             session.add(src)
 
     # 8. Document caches
+    cache_count = 0
     for ce in session.exec(sel(CacheEntry)).all():
         if ce.cache_type == CacheType.document:
             session.delete(ce)
+            cache_count += 1
 
     # 9. Documents
     docs = session.exec(sel(Document)).all()
@@ -207,8 +211,11 @@ def clear_all_documents(session: Session = Depends(get_session)):
         "documents_deleted": doc_count,
         "jobs_deleted": job_count,
         "steps_deleted": step_count,
+        "batch_items_deleted": item_count,
         "batches_deleted": batch_count,
-        "message": f"Successfully cleared {doc_count} documents, {job_count} jobs, and all associated processing history.",
+        "cache_entries_deleted": cache_count,
+        "product_document_associations_deleted": pda_count,
+        "message": f"Processing history cleared — {job_count} jobs, {doc_count} documents, and {step_count} steps removed.",
     }
 
 @router.get("/{document_id}", response_model=Document)

@@ -30,10 +30,10 @@ router = APIRouter(prefix="/health")
 
 # Pydantic Schemas for Catalog Health Endpoint
 class OverallHealthSchema(BaseModel):
-    quality_score: float
-    completeness_rate: float
-    verification_rate: float
-    evidence_coverage: float
+    quality_score: Optional[float] = None
+    completeness_rate: Optional[float] = None
+    verification_rate: Optional[float] = None
+    evidence_coverage: Optional[float] = None
     total_products: int
     total_attributes: int
     total_documents: int
@@ -313,8 +313,8 @@ def get_catalog_health(session: Session = Depends(get_session)) -> CatalogHealth
     needs_review_count = int(prod_row[3] or 0)
     draft_count = int(prod_row[4] or 0)
 
-    quality_score_overall = round(avg_quality, 1)
-    verification_rate = round((verified_count / total_products) * 100.0, 1) if total_products > 0 else 0.0
+    quality_score_overall = round(avg_quality, 1) if total_products > 0 else None
+    verification_rate = round((verified_count / total_products) * 100.0, 1) if total_products > 0 else None
 
     # Attribute totals
     total_attributes = int(attr_row[0] or 0)
@@ -322,9 +322,10 @@ def get_catalog_health(session: Session = Depends(get_session)) -> CatalogHealth
     attr_conflicts_count = int(attr_row[2] or 0)
     evidence_coverage = (
         round((supported_attr_count / total_attributes) * 100.0, 1)
-        if total_attributes > 0
-        else 0.0
+        if (total_attributes > 0 and total_products > 0)
+        else None
     )
+    completeness_rate = quality_score_overall
 
     # Validation totals
     total_open_issues = int(val_row[0] or 0)
@@ -408,7 +409,7 @@ def get_catalog_health(session: Session = Depends(get_session)) -> CatalogHealth
 
     products_needing_attention = [build_attention_item(p) for p in attention_candidates]
     worst_products = [build_attention_item(p) for p in worst_candidates]
-    overall_completeness_rate = round(min(100.0, avg_quality * 1.1), 1) if total_products > 0 else 0.0
+    overall_completeness_rate = round(min(100.0, avg_quality * 1.1), 1) if total_products > 0 else None
 
     return CatalogHealthResponse(
         overall=OverallHealthSchema(

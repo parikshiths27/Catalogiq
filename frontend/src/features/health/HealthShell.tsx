@@ -19,10 +19,10 @@ import { StatusBadge } from '../../components/ui/StatusBadge';
 import { apiUrl } from '../../lib/api';
 
 export interface OverallHealth {
-  quality_score: number;
-  completeness_rate: number;
-  verification_rate: number;
-  evidence_coverage: number;
+  quality_score: number | null;
+  completeness_rate: number | null;
+  verification_rate: number | null;
+  evidence_coverage: number | null;
   total_products: number;
   total_attributes: number;
   total_documents: number;
@@ -276,7 +276,7 @@ export const HealthShell: React.FC = () => {
             <Activity className="w-4 h-4 text-emerald-500" />
           </div>
           <div className="text-3xl font-serif font-normal text-emerald-500">
-            {overall.quality_score.toFixed(1)}%
+            {overall.quality_score != null ? `${overall.quality_score.toFixed(1)}%` : '—'}
           </div>
           <p className="text-[10px] text-muted-foreground font-light leading-snug">
             Avg quality score across all items based on completeness and evidence.
@@ -290,7 +290,7 @@ export const HealthShell: React.FC = () => {
             <Layers className="w-4 h-4 text-foreground" />
           </div>
           <div className="text-3xl font-serif font-normal text-foreground">
-            {overall.completeness_rate.toFixed(1)}%
+            {overall.completeness_rate != null ? `${overall.completeness_rate.toFixed(1)}%` : '—'}
           </div>
           <p className="text-[10px] text-muted-foreground font-light leading-snug">
             Required and optional attributes extracted from sources.
@@ -304,7 +304,7 @@ export const HealthShell: React.FC = () => {
             <CheckCircle2 className="w-4 h-4 text-[#9B8F77]" />
           </div>
           <div className="text-3xl font-serif font-normal text-[#9B8F77]">
-            {overall.verification_rate.toFixed(1)}%
+            {overall.verification_rate != null ? `${overall.verification_rate.toFixed(1)}%` : '—'}
           </div>
           <p className="text-[10px] text-muted-foreground font-light leading-snug">
             {status_breakdown.verified} of {overall.total_products} products verified.
@@ -318,7 +318,7 @@ export const HealthShell: React.FC = () => {
             <ShieldCheck className="w-4 h-4 text-foreground" />
           </div>
           <div className="text-3xl font-serif font-normal text-foreground">
-            {overall.evidence_coverage.toFixed(1)}%
+            {overall.evidence_coverage != null ? `${overall.evidence_coverage.toFixed(1)}%` : '—'}
           </div>
           <p className="text-[10px] text-muted-foreground font-light leading-snug">
             Specs grounded in verbatim document text.

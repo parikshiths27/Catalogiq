@@ -98,22 +98,37 @@ export const JobsShell: React.FC = () => {
     }
   };
 
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [clearError, setClearError] = useState<string | null>(null);
+
   const handleClearAll = async () => {
     if (!window.confirm('Are you sure you want to clear all processing logs? This will remove all document records and processing history. Products that were created will NOT be deleted.')) {
       return;
     }
     try {
       setClearing(true);
+      setClearError(null);
+      setSuccessMessage(null);
       const res = await fetch(apiUrl('/api/v1/documents/clear-all'), { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to clear processing logs');
+      if (!res.ok) {
+        let errMsg = 'Failed to clear processing logs';
+        try {
+          const errData = await res.json();
+          if (errData.detail) errMsg = errData.detail;
+        } catch {}
+        throw new Error(errMsg);
+      }
+      const data = await res.json();
+      setSuccessMessage(data.message || `Processing history cleared — ${data.jobs_deleted ?? 0} jobs, ${data.documents_deleted ?? 0} documents, and ${data.steps_deleted ?? 0} steps removed.`);
+      queryClient.setQueryData(['processing-documents'], []);
+      queryClient.removeQueries({ queryKey: ['parsed-document'] });
       queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
-      queryClient.invalidateQueries({ queryKey: ['parsed-document'] });
       queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
       queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
       queryClient.invalidateQueries({ queryKey: ['products-list'] });
       setSelectedDocId(null);
     } catch (err: any) {
-      alert(`Error clearing logs: ${err?.message}`);
+      setClearError(err?.message || 'Error clearing processing logs');
     } finally {
       setClearing(false);
     }
@@ -151,6 +166,26 @@ export const JobsShell: React.FC = () => {
         </div>
       </div>
 
+      {successMessage && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 text-xs rounded-none p-4 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Activity className="w-4 h-4 flex-shrink-0" />
+            <span>{successMessage}</span>
+          </div>
+          <button onClick={() => setSuccessMessage(null)} className="text-muted-foreground hover:text-foreground text-xs">Dismiss</button>
+        </div>
+      )}
+
+      {clearError && (
+        <div className="bg-destructive/10 border border-destructive/20 text-destructive text-xs rounded-none p-4 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            <span>{clearError}</span>
+          </div>
+          <button onClick={() => setClearError(null)} className="text-muted-foreground hover:text-foreground text-xs">Dismiss</button>
+        </div>
+      )}
+
       {error && (
         <div className="bg-destructive/10 border border-destructive/20 text-destructive text-xs rounded-none p-4 flex items-center space-x-2">
           <AlertTriangle className="w-5 h-5 flex-shrink-0" />
@@ -166,7 +201,7 @@ export const JobsShell: React.FC = () => {
         <div className="bg-card border border-border rounded-none overflow-hidden">
           <div className="p-12 text-center text-muted-foreground flex flex-col items-center justify-center space-y-2">
             <Activity className="w-10 h-10 text-muted-foreground opacity-50" />
-            <h4 className="font-serif text-lg font-normal text-foreground">No Documents Ingested</h4>
+            <h4 className="font-serif text-lg font-normal text-foreground">No Processing History Yet</h4>
             <p className="text-xs uppercase tracking-wider max-w-xs font-light">Upload technical catalogs to run parser workers and monitor processes.</p>
           </div>
         </div>

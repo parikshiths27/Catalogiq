@@ -287,3 +287,7 @@ class QdrantService:
             return None
 
         return Filter(must=must_conditions)
+
+
+def get_qdrant_service() -> QdrantService:
+    return QdrantService()
