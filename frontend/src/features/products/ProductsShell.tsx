@@ -633,6 +633,8 @@ export const ProductsShell: React.FC = () => {
         {/* Tab Contents */}
         {activeTab === 'enrichment' && (
           <EnrichmentPanel
+            product={selectedProduct}
+            attributes={attributes}
             enrichment={enrichmentData}
             onRerunEnrichment={handleRerunEnrichment}
           />

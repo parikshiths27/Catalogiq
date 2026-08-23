@@ -476,3 +476,113 @@ def test_get_product_complete_details_envelope_and_contract(session: Session):
         app.dependency_overrides.clear()
 
 
+def test_product_details_structured_commerce_format_milwaukee_49_94_0013(session: Session):
+    """
+    Verifies that GET /api/v1/products/{id}/details returns structured commerce content
+    conforming to Unilog delivery standard for Milwaukee 49-94-0013:
+    - INPUT — Part_Desc
+    - Classpath
+    - Brand / MPN
+    - Invoice Desc (<=40 char, CAPS)
+    - Mobile Desc (60–80 char)
+    - Product Title / Short Desc
+    - Long Description
+    - Attributes
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db.session import get_session
+
+    def override_get_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        client = TestClient(app)
+
+        product = Product(
+            sku="49-94-0013",
+            brand="Milwaukee",
+            product_name="5 in x .045 in x 7/8 in Cut-Off Disc",
+            description="5 in x .045 in x 7/8 in Metal Cut-Off Wheel Type 1",
+            category="Abrasives & Polishers>Flap Discs & Flap Wheels",
+            quality_score=96.0,
+            status="verified"
+        )
+        session.add(product)
+        session.commit()
+
+        attr1 = ProductAttribute(
+            product_id=product.id,
+            attribute_name="Diameter",
+            display_name="Diameter",
+            raw_value="5 in",
+            normalized_value="5",
+            unit="in",
+            data_type=AttributeDataType.numeric,
+            confidence=0.98,
+            status=AttributeStatus.verified,
+            source_type="document"
+        )
+        attr2 = ProductAttribute(
+            product_id=product.id,
+            attribute_name="Thickness",
+            display_name="Thickness",
+            raw_value=".045 in",
+            normalized_value=".045",
+            unit="in",
+            data_type=AttributeDataType.numeric,
+            confidence=0.98,
+            status=AttributeStatus.verified,
+            source_type="document"
+        )
+        attr3 = ProductAttribute(
+            product_id=product.id,
+            attribute_name="Arbor Size",
+            display_name="Arbor Size",
+            raw_value="7/8 in",
+            normalized_value="7/8",
+            unit="in",
+            data_type=AttributeDataType.numeric,
+            confidence=0.98,
+            status=AttributeStatus.verified,
+            source_type="document"
+        )
+        session.add(attr1)
+        session.add(attr2)
+        session.add(attr3)
+        session.commit()
+
+        res = client.get(f"/api/v1/products/{product.id}/details")
+        assert res.status_code == 200
+        data = res.json()
+
+        # 1. Product Identity & Input
+        assert data["product"]["sku"] == "49-94-0013"
+        assert data["product"]["brand"] == "Milwaukee"
+        assert data["product"]["description"] == "5 in x .045 in x 7/8 in Metal Cut-Off Wheel Type 1"
+        assert data["product"]["category"] == "Abrasives & Polishers>Flap Discs & Flap Wheels"
+
+        # 2. Structured Delivery Descriptions in Enrichment
+        enrichment = data["enrichment"]
+        assert enrichment["invoice_desc"] is not None
+        assert len(enrichment["invoice_desc"]) <= 40
+        assert enrichment["invoice_desc"] == enrichment["invoice_desc"].upper()
+        assert "CUT OFF DISC" in enrichment["invoice_desc"]
+
+        assert enrichment["mobile_desc"] is not None
+        assert "Milwaukee" in enrichment["mobile_desc"]
+        assert "49-94-0013" in enrichment["mobile_desc"]
+
+        assert enrichment["short_description"] is not None
+        assert "Milwaukee" in enrichment["short_description"]
+
+        assert enrichment["long_desc"] is not None
+        assert "Milwaukee" in enrichment["long_desc"]
+
+        # 3. Normalized Attributes List
+        assert len(data["attributes"]) == 3
+    finally:
+        app.dependency_overrides.clear()
+
+
