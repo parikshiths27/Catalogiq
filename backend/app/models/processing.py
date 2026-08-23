@@ -42,7 +42,7 @@ class ProcessingJob(SQLModel, table=True):
     completed_items: int = Field(default=0, nullable=False)
     failed_items: int = Field(default=0, nullable=False)
     needs_review_items: int = Field(default=0, nullable=False)
-    status: JobStatus = Field(default=JobStatus.queued, sa_column=Column(sa.String, nullable=False))
+    status: JobStatus = Field(default=JobStatus.queued, sa_column=Column(sa.String, index=True, nullable=False))
     current_stage: Optional[str] = Field(default=None, nullable=True)
     error_message: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     
@@ -56,7 +56,7 @@ class ProcessingJob(SQLModel, table=True):
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True), nullable=False)
+        sa_column=Column(DateTime(timezone=True), index=True, nullable=False)
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -71,7 +71,7 @@ class ProcessingStep(SQLModel, table=True):
     )
     document_id: Optional[uuid.UUID] = Field(
         default=None,
-        sa_column=Column(sa.Uuid, sa.ForeignKey("document.id", ondelete="SET NULL"), nullable=True)
+        sa_column=Column(sa.Uuid, sa.ForeignKey("document.id", ondelete="SET NULL"), index=True, nullable=True)
     )
     product_id: Optional[uuid.UUID] = Field(
         default=None,
@@ -96,7 +96,7 @@ class ProcessingStep(SQLModel, table=True):
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True), nullable=False)
+        sa_column=Column(DateTime(timezone=True), index=True, nullable=False)
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),

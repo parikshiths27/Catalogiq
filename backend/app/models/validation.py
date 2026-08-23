@@ -54,9 +54,9 @@ class ValidationResult(SQLModel, table=True):
         default=None,
         sa_column=Column(sa.Uuid, sa.ForeignKey("productattribute.id", ondelete="SET NULL"), nullable=True)
     )
-    validation_type: ValidationType = Field(sa_column=Column(sa.String, nullable=False))
+    validation_type: ValidationType = Field(sa_column=Column(sa.String, index=True, nullable=False))
     severity: ValidationSeverity = Field(sa_column=Column(sa.String, nullable=False))
-    status: ValidationStatus = Field(default=ValidationStatus.open, sa_column=Column(sa.String, nullable=False))
+    status: ValidationStatus = Field(default=ValidationStatus.open, sa_column=Column(sa.String, index=True, nullable=False))
     message: str = Field(sa_column=Column(Text, nullable=False))
     expected_value: Optional[Any] = Field(default=None, sa_column=Column(JSON, nullable=True))
     actual_value: Optional[Any] = Field(default=None, sa_column=Column(JSON, nullable=True))

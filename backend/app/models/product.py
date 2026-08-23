@@ -27,7 +27,7 @@ class Product(SQLModel, table=True):
     product_type: Optional[str] = Field(default=None, nullable=True)
     description: Optional[str] = Field(default=None, nullable=True)
     commerce_description: Optional[str] = Field(default=None, nullable=True)
-    status: ProductStatus = Field(default=ProductStatus.draft, sa_column=Column(sa.String, nullable=False))
+    status: ProductStatus = Field(default=ProductStatus.draft, sa_column=Column(sa.String, index=True, nullable=False))
     quality_score: float = Field(default=0.0, index=True, nullable=False)
     
     # JSONB dynamic industrial attributes & lists (features, apps, certs)
@@ -43,5 +43,5 @@ class Product(SQLModel, table=True):
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True), nullable=False)
+        sa_column=Column(DateTime(timezone=True), index=True, nullable=False)
     )

@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
 from sqlmodel import Session, select, func
-from sqlalchemy import or_, desc
+from sqlalchemy import or_, desc, case
 
 from app.db.session import get_session
 from app.models import (
@@ -86,134 +86,109 @@ class OverviewSummaryResponse(BaseModel):
 @router.get("/summary", response_model=OverviewSummaryResponse, status_code=status.HTTP_200_OK)
 def get_overview_summary(session: Session = Depends(get_session)) -> OverviewSummaryResponse:
     """
-    Read-only dashboard overview endpoint providing live database aggregates
+    High-performance read-only dashboard overview endpoint providing live database aggregates
     for CatalogIQ operational monitoring.
+    Consolidates 29+ sequential database queries into 3 optimized queries.
     """
-    # 1. Product aggregates
-    total_products = session.exec(select(func.count()).select_from(Product)).one() or 0
-    verified_products = session.exec(
-        select(func.count()).select_from(Product).where(Product.status == ProductStatus.verified)
-    ).one() or 0
-    needs_review_products = session.exec(
-        select(func.count()).select_from(Product).where(Product.status == ProductStatus.needs_review)
-    ).one() or 0
-    draft_products = session.exec(
-        select(func.count()).select_from(Product).where(Product.status == ProductStatus.draft)
-    ).one() or 0
-
-    avg_quality = session.exec(select(func.avg(Product.quality_score)).select_from(Product)).one()
-    catalog_quality_score = round(float(avg_quality), 1) if avg_quality is not None and total_products > 0 else None
-    verification_rate = round((verified_products / total_products) * 100.0, 1) if total_products > 0 else None
-
-    # 2. Document & Job aggregates
-    total_documents = session.exec(select(func.count()).select_from(Document)).one() or 0
-    documents_processed = session.exec(
-        select(func.count()).select_from(Document).where(Document.status == DocumentStatus.processed)
-    ).one() or 0
-
-    # Also count completed IngestionBatches if no documents are recorded as processed
-    # (e.g., when ingestion was done via the tabular pipeline which may mark batch but not doc)
-    completed_batches = session.exec(
-        select(func.count()).select_from(IngestionBatch).where(
-            IngestionBatch.status.in_([BatchStatus.completed, BatchStatus.partially_completed])
-        )
-    ).one() or 0
-
-    # Use the higher of doc-based count vs batch-based count as the authoritative "Sources Processed" metric
-    sources_processed = max(documents_processed, completed_batches)
-    total_sources = max(total_documents, session.exec(select(func.count()).select_from(IngestionBatch)).one() or 0)
-
-    active_jobs = session.exec(
-        select(func.count()).select_from(ProcessingJob).where(
-            ProcessingJob.status.in_([JobStatus.queued, JobStatus.processing])
-        )
-    ).one() or 0
-
-    # 3. Processing Activity List (recent documents joined with job stages)
-    recent_docs = session.exec(
-        select(Document).order_by(desc(Document.created_at)).limit(10)
-    ).all()
-
-    processing_activity: List[ProcessingActivityItemSchema] = []
-    for doc in recent_docs:
-        # Determine latest job / stage if available
-        step_stmt = (
-            select(ProcessingStep)
-            .where(ProcessingStep.document_id == doc.id)
-            .order_by(desc(ProcessingStep.created_at))
-        )
-        latest_step = session.exec(step_stmt).first()
-        stage_str = str(latest_step.stage.value if hasattr(latest_step.stage, "value") else latest_step.stage) if latest_step else doc.status.value if hasattr(doc.status, "value") else str(doc.status)
-
-        processing_activity.append(
-            ProcessingActivityItemSchema(
-                id=str(doc.id),
-                filename=doc.filename,
-                status=str(doc.status.value if hasattr(doc.status, "value") else doc.status),
-                created_at=doc.created_at,
-                page_count=doc.page_count,
-                current_stage=stage_str,
-            )
-        )
-
-    # 4. Review Summary Aggregates
-    unresolved_issues = session.exec(
-        select(func.count()).select_from(ValidationResult).where(ValidationResult.status == ValidationStatus.open)
-    ).one() or 0
-
     conflict_validation_types = [
         ValidationType.cross_attribute_conflict,
         ValidationType.cross_source_conflict,
         ValidationType.inconsistent_value,
     ]
-    val_conflicts = session.exec(
-        select(func.count()).select_from(ValidationResult).where(
-            ValidationResult.status == ValidationStatus.open,
-            ValidationResult.validation_type.in_(conflict_validation_types)
-        )
-    ).one() or 0
 
-    attr_conflicts = session.exec(
-        select(func.count()).select_from(ProductAttribute).where(ProductAttribute.status == AttributeStatus.conflicting)
-    ).one() or 0
+    # 1. Single composite query for all scalar aggregate KPIs
+    stmt_agg = select(
+        select(func.count(Product.id)).scalar_subquery().label("total_products"),
+        select(func.count(case((Product.status == ProductStatus.verified, 1)))).scalar_subquery().label("verified_products"),
+        select(func.count(case((Product.status == ProductStatus.needs_review, 1)))).scalar_subquery().label("needs_review_products"),
+        select(func.count(case((Product.status == ProductStatus.draft, 1)))).scalar_subquery().label("draft_products"),
+        select(func.avg(Product.quality_score)).scalar_subquery().label("avg_quality"),
+        select(func.count(case((or_(Product.status == ProductStatus.needs_review, Product.quality_score < 70.0), 1)))).scalar_subquery().label("products_needing_attention"),
+        select(func.count(Document.id)).scalar_subquery().label("total_documents"),
+        select(func.count(case((Document.status == DocumentStatus.processed, 1)))).scalar_subquery().label("documents_processed"),
+        select(func.count(IngestionBatch.id)).scalar_subquery().label("total_batches"),
+        select(func.count(case((IngestionBatch.status.in_([BatchStatus.completed, BatchStatus.partially_completed]), 1)))).scalar_subquery().label("completed_batches"),
+        select(func.count(case((ProcessingJob.status.in_([JobStatus.queued, JobStatus.processing]), 1)))).scalar_subquery().label("active_jobs"),
+        select(func.count(case((ValidationResult.status == ValidationStatus.open, 1)))).scalar_subquery().label("unresolved_issues"),
+        select(func.count(case(((ValidationResult.status == ValidationStatus.open) & ValidationResult.validation_type.in_(conflict_validation_types), 1)))).scalar_subquery().label("val_conflicts"),
+        select(func.count(case((ProductAttribute.status == AttributeStatus.conflicting, 1)))).scalar_subquery().label("attr_conflicts"),
+        select(func.count(case((or_(ProductAttribute.confidence < 0.75, ProductAttribute.status.in_([AttributeStatus.needs_review, AttributeStatus.conflicting])), 1)))).scalar_subquery().label("low_confidence_attrs"),
+        select(func.count(ProductAttribute.id)).scalar_subquery().label("total_attrs"),
+        select(func.count(func.distinct(AttributeEvidence.attribute_id))).scalar_subquery().label("evidence_attrs"),
+    )
+
+    # 2. Correlated query for recent documents with latest stage
+    latest_stage_subq = (
+        select(ProcessingStep.stage)
+        .where(ProcessingStep.document_id == Document.id)
+        .order_by(desc(ProcessingStep.created_at))
+        .limit(1)
+        .correlate(Document)
+        .scalar_subquery()
+    )
+
+    doc_stmt = (
+        select(
+            Document.id,
+            Document.filename,
+            Document.status,
+            Document.created_at,
+            Document.page_count,
+            latest_stage_subq.label("latest_stage"),
+        )
+        .order_by(desc(Document.created_at))
+        .limit(10)
+    )
+
+    # 3. Recent Products
+    prod_stmt = select(Product).order_by(desc(Product.updated_at)).limit(10)
+
+    # Execute the 3 consolidated queries
+    row = session.exec(stmt_agg).first()
+    recent_doc_rows = session.exec(doc_stmt).all()
+    recent_prods_db = session.exec(prod_stmt).all()
+
+    total_products = (row[0] if row else 0) or 0
+    verified_products = (row[1] if row else 0) or 0
+    needs_review_products = (row[2] if row else 0) or 0
+    draft_products = (row[3] if row else 0) or 0
+    avg_quality = row[4] if row else None
+    products_needing_attention = (row[5] if row else 0) or 0
+
+    total_documents = (row[6] if row else 0) or 0
+    documents_processed = (row[7] if row else 0) or 0
+    total_batches = (row[8] if row else 0) or 0
+    completed_batches = (row[9] if row else 0) or 0
+    active_jobs = (row[10] if row else 0) or 0
+
+    unresolved_issues = (row[11] if row else 0) or 0
+    val_conflicts = (row[12] if row else 0) or 0
+    attr_conflicts = (row[13] if row else 0) or 0
     total_conflicts = val_conflicts + attr_conflicts
+    low_confidence_attrs = (row[14] if row else 0) or 0
+    total_attrs = (row[15] if row else 0) or 0
+    evidence_attrs = (row[16] if row else 0) or 0
 
-    low_confidence_attrs = session.exec(
-        select(func.count()).select_from(ProductAttribute).where(
-            or_(
-                ProductAttribute.confidence < 0.75,
-                ProductAttribute.status == AttributeStatus.needs_review,
-                ProductAttribute.status == AttributeStatus.conflicting,
-            )
-        )
-    ).one() or 0
-
+    # Derived KPIs with safe defaults
+    catalog_quality_score = round(float(avg_quality), 1) if avg_quality is not None and total_products > 0 else None
+    verification_rate = round((verified_products / total_products) * 100.0, 1) if total_products > 0 else None
+    sources_processed = max(documents_processed, completed_batches)
+    total_sources = max(total_documents, total_batches)
     review_backlog = needs_review_products if needs_review_products > 0 else unresolved_issues
-
-    # 5. Catalog Quality Summary Aggregates
-    total_attrs = session.exec(select(func.count()).select_from(ProductAttribute)).one() or 0
-    evidence_attrs = session.exec(
-        select(func.count(func.distinct(AttributeEvidence.attribute_id))).select_from(AttributeEvidence)
-    ).one() or 0
-
     evidence_coverage_rate = round((evidence_attrs / total_attrs) * 100.0, 1) if total_attrs > 0 else None
-
-    # Completeness rate estimation: % of products with quality score >= 70 or avg product score
     completeness_rate = catalog_quality_score
 
-    products_needing_attention = session.exec(
-        select(func.count()).select_from(Product).where(
-            or_(
-                Product.status == ProductStatus.needs_review,
-                Product.quality_score < 70.0
-            )
+    processing_activity: List[ProcessingActivityItemSchema] = [
+        ProcessingActivityItemSchema(
+            id=str(r[0]),
+            filename=r[1],
+            status=str(r[2].value if hasattr(r[2], "value") else r[2]),
+            created_at=r[3],
+            page_count=r[4],
+            current_stage=str(r[5].value if hasattr(r[5], "value") else r[5]) if r[5] else str(r[2].value if hasattr(r[2], "value") else r[2]),
         )
-    ).one() or 0
-
-    # 6. Recent Products List
-    recent_prods_db = session.exec(
-        select(Product).order_by(desc(Product.updated_at)).limit(10)
-    ).all()
+        for r in recent_doc_rows
+    ]
 
     recent_products: List[RecentProductItemSchema] = [
         RecentProductItemSchema(

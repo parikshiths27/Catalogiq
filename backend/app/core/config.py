@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     ENV: str = "development"
     PORT: int = 8000
 
+    # --- Execution Mode ---
+    # Options: inline (web-only, synchronous in-process for free cloud) | celery (distributed async worker)
+    PROCESSING_MODE: str = "inline"
+
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/catalogiq"
     REDIS_URL: str = "redis://localhost:6379/0"
     QDRANT_URL: str = "http://localhost:6333"
@@ -72,7 +76,7 @@ class Settings(BaseSettings):
 
     # --- Gemini (production) ---
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-3.5-flash"
+    GEMINI_MODEL: str = "gemini-3.6-flash"
 
     # --- Embedding ---
     EMBEDDING_PROVIDER: str = "fastembed"

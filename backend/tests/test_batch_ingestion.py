@@ -19,6 +19,11 @@ from app.services.parser import MockParser, MultiFormatParser
 
 client = TestClient(app)
 
+@pytest.fixture(autouse=True)
+def set_celery_mode_for_async_tests(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "PROCESSING_MODE", "celery")
+
 def test_multi_file_upload_batch(session: Session, monkeypatch):
     """Verifies multi-file batch creation and aggregate progress tracking."""
     monkeypatch.setenv("TEST_MOCK_PARSER", "true")

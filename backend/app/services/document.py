@@ -171,21 +171,199 @@ class DocumentService:
         from app.services.batch import BatchService
         BatchService(self.session).update_batch_progress(batch_id)
 
-        # Trigger Celery worker task execution with inline fallback
-        from app.workers.tasks.document_processing import process_document_task
-        try:
-            process_document_task.delay(str(doc_id), str(job_id), str(step_id))
-        except Exception as err:
-            logger.info(f"Worker queue dispatch bypassed ({err}), executing process_document_task directly.")
-            process_document_task(str(doc_id), str(job_id), str(step_id))
+        if settings.PROCESSING_MODE.lower() == "inline":
+            self.process_document_inline(document.id, job.id, step.id)
+            self.session.refresh(document)
+            self.session.refresh(job)
+            return {
+                "document_id": document.id,
+                "job_id": job.id,
+                "batch_id": batch_id,
+                "status": document.status.value if hasattr(document.status, "value") else str(document.status),
+                "cached": False
+            }
+        else:
+            # Trigger Celery worker task execution with inline fallback
+            from app.workers.tasks.document_processing import process_document_task
+            try:
+                process_document_task.delay(str(doc_id), str(job_id), str(step_id))
+            except Exception as err:
+                logger.info(f"Worker queue dispatch bypassed ({err}), executing process_document_task directly.")
+                process_document_task(str(doc_id), str(job_id), str(step_id))
 
-        return {
-            "document_id": document.id,
-            "job_id": job.id,
-            "batch_id": batch_id,
-            "status": "queued",
-            "cached": False
-        }
+            return {
+                "document_id": document.id,
+                "job_id": job.id,
+                "batch_id": batch_id,
+                "status": "queued",
+                "cached": False
+            }
+
+    def process_document_inline(
+        self,
+        document_id: uuid.UUID,
+        job_id: uuid.UUID,
+        step_id: uuid.UUID,
+    ) -> None:
+        """
+        Executes the complete processing lifecycle synchronously/inline within the FastAPI service:
+          Stage 1: Parsing (MultiFormatParser / Docling)
+          Stage 2: Extraction (Tabular / LLM semantic extraction)
+          Stage 3: Validation (Rules, Claims, Taxonomy, LOV)
+          Stage 4: Enrichment & Indexing (5-channel descriptions, 252-col format, Vector/Keyword indexing)
+        """
+        from app.workers.tasks.document_processing import (
+            get_parser,
+            get_llm_provider,
+            _update_batch_progress_if_needed,
+            _create_extraction_step,
+            _create_validation_step,
+            _create_enrichment_step,
+        )
+        from app.services.pipeline import DocumentProcessingService
+
+        logger.info(f"[Inline Pipeline] Starting processing for Doc: {document_id}, Job: {job_id}")
+
+        doc = self.session.get(Document, document_id)
+        job = self.session.get(ProcessingJob, job_id)
+        step = self.session.get(ProcessingStep, step_id)
+
+        if not doc or not job or not step:
+            logger.error(f"[Inline Pipeline] Entity not found. doc={bool(doc)}, job={bool(job)}, step={bool(step)}")
+            return
+
+        # -------------------------------------------------------------
+        # Stage 1: Parsing
+        # -------------------------------------------------------------
+        try:
+            parser = get_parser()
+            proc_service = DocumentProcessingService(self.session, parser=parser)
+            proc_service.process_document(document_id, job_id, step_id)
+            logger.info(f"[Inline Pipeline - Stage 1: Parsing] Completed for Doc: {document_id}")
+        except Exception as parse_err:
+            logger.error(f"[Inline Pipeline - Stage 1: Parsing] Failed for Doc: {document_id}: {parse_err}", exc_info=True)
+            now = datetime.now(timezone.utc)
+            self.session.refresh(doc)
+            self.session.refresh(job)
+            self.session.refresh(step)
+            doc.status = DocumentStatus.failed
+            doc.updated_at = now
+            step.status = StepStatus.failed
+            step.error_message = str(parse_err)[:500]
+            step.completed_at = now
+            step.updated_at = now
+            job.status = JobStatus.failed
+            job.error_message = str(parse_err)[:500]
+            job.failed_items = 1
+            job.completed_at = now
+            job.updated_at = now
+            self.session.add(doc)
+            self.session.add(step)
+            self.session.add(job)
+            self.session.commit()
+            _update_batch_progress_if_needed(self.session, doc, error_message=str(parse_err)[:500])
+            return
+
+        self.session.refresh(doc)
+        self.session.refresh(job)
+        if doc.status == DocumentStatus.failed or (job and job.status == JobStatus.failed):
+            _update_batch_progress_if_needed(self.session, doc)
+            return
+
+        # -------------------------------------------------------------
+        # Stage 2: Extraction
+        # -------------------------------------------------------------
+        try:
+            llm_provider = get_llm_provider()
+            proc_service = DocumentProcessingService(self.session, parser=parser, llm_provider=llm_provider)
+            extraction_step = _create_extraction_step(self.session, job_id, document_id)
+            proc_service.extract_document(document_id, job_id, extraction_step.id)
+            logger.info(f"[Inline Pipeline - Stage 2: Extraction] Completed for Doc: {document_id}")
+        except Exception as extract_err:
+            logger.error(f"[Inline Pipeline - Stage 2: Extraction] Failed for Doc: {document_id}: {extract_err}", exc_info=True)
+            now = datetime.now(timezone.utc)
+            self.session.refresh(doc)
+            self.session.refresh(job)
+            doc.status = DocumentStatus.failed
+            doc.updated_at = now
+            job.status = JobStatus.failed
+            job.error_message = str(extract_err)[:500]
+            job.failed_items = 1
+            job.completed_at = now
+            job.updated_at = now
+            self.session.add(doc)
+            self.session.add(job)
+            self.session.commit()
+            _update_batch_progress_if_needed(self.session, doc, error_message=str(extract_err)[:500])
+            return
+
+        self.session.refresh(doc)
+        self.session.refresh(job)
+        if doc.status == DocumentStatus.failed or (job and job.status == JobStatus.failed):
+            _update_batch_progress_if_needed(self.session, doc)
+            return
+
+        # If job is already completed or doc is processed (e.g. tabular catalogs where ExtractionStage completes the whole pipeline)
+        if job.status == JobStatus.completed or doc.status == DocumentStatus.processed:
+            _update_batch_progress_if_needed(self.session, doc)
+            logger.info(f"[Inline Pipeline] Tabular catalog fully completed for Doc: {document_id}")
+            return
+
+        # -------------------------------------------------------------
+        # Stage 3: Validation (for prose / PDF documents)
+        # -------------------------------------------------------------
+        try:
+            val_step = _create_validation_step(self.session, job_id, document_id)
+            proc_service.validate_document(document_id, job_id, val_step.id)
+            logger.info(f"[Inline Pipeline - Stage 3: Validation] Completed for Doc: {document_id}")
+        except Exception as val_err:
+            logger.error(f"[Inline Pipeline - Stage 3: Validation] Failed for Doc: {document_id}: {val_err}", exc_info=True)
+            now = datetime.now(timezone.utc)
+            self.session.refresh(doc)
+            self.session.refresh(job)
+            doc.status = DocumentStatus.failed
+            doc.updated_at = now
+            job.status = JobStatus.failed
+            job.error_message = str(val_err)[:500]
+            job.failed_items = 1
+            job.completed_at = now
+            job.updated_at = now
+            self.session.add(doc)
+            self.session.add(job)
+            self.session.commit()
+            _update_batch_progress_if_needed(self.session, doc, error_message=str(val_err)[:500])
+            return
+
+        # -------------------------------------------------------------
+        # Stage 4: Enrichment (for prose / PDF documents)
+        # -------------------------------------------------------------
+        try:
+            enrich_step = _create_enrichment_step(self.session, job_id, document_id)
+            proc_service.enrich_document(document_id, job_id, enrich_step.id)
+            logger.info(f"[Inline Pipeline - Stage 4: Enrichment] Completed for Doc: {document_id}")
+
+            self.session.refresh(doc)
+            doc.status = DocumentStatus.processed
+            doc.updated_at = datetime.now(timezone.utc)
+            self.session.add(doc)
+            self.session.commit()
+            _update_batch_progress_if_needed(self.session, doc)
+        except Exception as enrich_err:
+            logger.error(f"[Inline Pipeline - Stage 4: Enrichment] Failed for Doc: {document_id}: {enrich_err}", exc_info=True)
+            now = datetime.now(timezone.utc)
+            self.session.refresh(doc)
+            self.session.refresh(job)
+            doc.status = DocumentStatus.failed
+            doc.updated_at = now
+            job.status = JobStatus.failed
+            job.error_message = str(enrich_err)[:500]
+            job.failed_items = 1
+            job.completed_at = now
+            job.updated_at = now
+            self.session.add(doc)
+            self.session.add(job)
+            self.session.commit()
+            _update_batch_progress_if_needed(self.session, doc, error_message=str(enrich_err)[:500])
 
     def force_reprocess(self, document_id: uuid.UUID) -> Dict[str, Any]:
         """
@@ -236,20 +414,31 @@ class DocumentService:
 
         self.session.commit()
 
-        # Trigger background execution with inline fallback
-        from app.workers.tasks.document_processing import process_document_task
-        try:
-            process_document_task.delay(str(document_id), str(job_id), str(step_id))
-        except Exception as err:
-            logger.info(f"Worker queue dispatch bypassed ({err}), executing process_document_task directly.")
-            process_document_task(str(document_id), str(job_id), str(step_id))
+        if settings.PROCESSING_MODE.lower() == "inline":
+            self.process_document_inline(document.id, job.id, step.id)
+            self.session.refresh(document)
+            self.session.refresh(job)
+            return {
+                "document_id": document.id,
+                "job_id": job.id,
+                "status": document.status.value if hasattr(document.status, "value") else str(document.status),
+                "reprocessed": True
+            }
+        else:
+            # Trigger background execution with inline fallback
+            from app.workers.tasks.document_processing import process_document_task
+            try:
+                process_document_task.delay(str(document_id), str(job_id), str(step_id))
+            except Exception as err:
+                logger.info(f"Worker queue dispatch bypassed ({err}), executing process_document_task directly.")
+                process_document_task(str(document_id), str(job_id), str(step_id))
 
-        return {
-            "document_id": document.id,
-            "job_id": job.id,
-            "status": "queued",
-            "reprocessed": True
-        }
+            return {
+                "document_id": document.id,
+                "job_id": job.id,
+                "status": "queued",
+                "reprocessed": True
+            }
 
     def _handle_existing_document(self, doc: Document, batch_id: uuid.UUID) -> Dict[str, Any]:
         """
@@ -359,13 +548,29 @@ class DocumentService:
         from app.services.batch import BatchService
         BatchService(self.session).update_batch_progress(batch_id)
 
-        from app.workers.tasks.document_processing import process_document_task
-        process_document_task.delay(str(doc.id), str(job_id), str(step_id))
+        if settings.PROCESSING_MODE.lower() == "inline":
+            self.process_document_inline(doc.id, job.id, step.id)
+            self.session.refresh(doc)
+            self.session.refresh(job)
+            return {
+                "document_id": doc.id,
+                "job_id": job.id,
+                "batch_id": batch_id,
+                "status": doc.status.value if hasattr(doc.status, "value") else str(doc.status),
+                "cached": True
+            }
+        else:
+            from app.workers.tasks.document_processing import process_document_task
+            try:
+                process_document_task.delay(str(doc.id), str(job_id), str(step_id))
+            except Exception as err:
+                logger.info(f"Worker queue dispatch bypassed ({err}), executing process_document_task directly.")
+                process_document_task(str(doc.id), str(job_id), str(step_id))
 
-        return {
-            "document_id": doc.id,
-            "job_id": job.id,
-            "batch_id": batch_id,
-            "status": "queued",
-            "cached": True
-        }
+            return {
+                "document_id": doc.id,
+                "job_id": job.id,
+                "batch_id": batch_id,
+                "status": "queued",
+                "cached": True
+            }

@@ -827,6 +827,7 @@ class ExtractionStage(PipelineStage):
                         "short_desc": enrich_res["descriptions"]["short_desc"],
                         "long_desc": enrich_res["descriptions"]["long_desc"],
                         "retail_desc": enrich_res["descriptions"]["retail_desc"],
+                        "descriptions": enrich_res["descriptions"],
                         "commerce_description": long_desc,
                         "features": features,
                         "applications": [category],

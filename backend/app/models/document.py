@@ -36,7 +36,7 @@ class Document(SQLModel, table=True):
         default=None,
         sa_column=Column(sa.Uuid, sa.ForeignKey("ingestion_batch.id", ondelete="SET NULL"), index=True, nullable=True)
     )
-    status: DocumentStatus = Field(default=DocumentStatus.uploaded, sa_column=Column(sa.String, nullable=False))
+    status: DocumentStatus = Field(default=DocumentStatus.uploaded, sa_column=Column(sa.String, index=True, nullable=False))
     parser_name: Optional[str] = Field(default=None, nullable=True)
     parser_version: Optional[str] = Field(default=None, nullable=True)
     parsed_storage_key: Optional[str] = Field(default=None, nullable=True)
@@ -47,7 +47,7 @@ class Document(SQLModel, table=True):
     metadata_json: Optional[Dict[str, Any]] = Field(default_factory=dict, sa_column=Column("metadata", JSON))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True), nullable=False)
+        sa_column=Column(DateTime(timezone=True), index=True, nullable=False)
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),

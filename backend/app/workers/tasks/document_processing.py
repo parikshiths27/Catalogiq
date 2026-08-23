@@ -120,6 +120,10 @@ def _create_extraction_step(session: Session, job_id: uuid.UUID, document_id: uu
 
 def _dispatch_next_task(task_func, *args):
     """Dispatches task via Celery worker queue with seamless inline fallback."""
+    from app.core.config import settings
+    if settings.PROCESSING_MODE.lower() == "inline":
+        task_func(*args)
+        return
     try:
         task_func.delay(*args)
     except Exception as err:

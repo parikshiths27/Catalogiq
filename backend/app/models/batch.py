@@ -19,7 +19,7 @@ class IngestionBatch(SQLModel, table=True):
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     name: Optional[str] = Field(default=None, nullable=True)
-    status: BatchStatus = Field(default=BatchStatus.queued, sa_column=Column(sa.String, nullable=False))
+    status: BatchStatus = Field(default=BatchStatus.queued, sa_column=Column(sa.String, index=True, nullable=False))
     total_files: int = Field(default=0, nullable=False)
     processed_files: int = Field(default=0, nullable=False)
     completed_files: int = Field(default=0, nullable=False)

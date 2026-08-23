@@ -111,8 +111,14 @@ def retry_job(job_id: uuid.UUID, session: Session = Depends(get_session)):
     session.add(step)
     session.commit()
 
-    # Re-trigger the background Celery worker task execution
-    from app.workers.tasks.document_processing import process_document_task
-    process_document_task.delay(str(step.document_id), str(job_id), str(step.id))
-
-    return {"message": "Job retry scheduled successfully", "job_id": job_id}
+    # Re-trigger processing according to PROCESSING_MODE
+    from app.core.config import settings
+    if settings.PROCESSING_MODE.lower() == "inline":
+        from app.services.document import DocumentService
+        doc_service = DocumentService(session)
+        doc_service.process_document_inline(step.document_id, job_id, step.id)
+        return {"message": "Job retry executed successfully", "job_id": job_id}
+    else:
+        from app.workers.tasks.document_processing import process_document_task
+        process_document_task.delay(str(step.document_id), str(job_id), str(step.id))
+        return {"message": "Job retry scheduled successfully", "job_id": job_id}

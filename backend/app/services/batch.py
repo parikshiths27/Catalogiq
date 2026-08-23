@@ -88,20 +88,8 @@ class BatchService:
                 self.session.commit()
 
         # Update batch aggregate statistics
+        self.update_batch_progress(batch.id)
         self.session.refresh(batch)
-        batch.failed_files += len(rejected_files)
-        batch.processed_files += len(rejected_files)
-        if batch.processed_files >= batch.total_files:
-            if batch.failed_files == batch.total_files:
-                batch.status = BatchStatus.failed
-            elif batch.failed_files > 0:
-                batch.status = BatchStatus.partially_completed
-            else:
-                batch.status = BatchStatus.completed
-            batch.completed_at = datetime.now(timezone.utc)
-
-        self.session.add(batch)
-        self.session.commit()
 
         return {
             "batch_id": batch.id,
@@ -239,20 +227,8 @@ class BatchService:
                 self.session.commit()
 
         # Update batch aggregate statistics
+        self.update_batch_progress(batch.id)
         self.session.refresh(batch)
-        batch.failed_files += len(rejected_files)
-        batch.processed_files += len(rejected_files)
-        if batch.processed_files >= batch.total_files:
-            if batch.failed_files == batch.total_files:
-                batch.status = BatchStatus.failed
-            elif batch.failed_files > 0:
-                batch.status = BatchStatus.partially_completed
-            else:
-                batch.status = BatchStatus.completed
-            batch.completed_at = datetime.now(timezone.utc)
-
-        self.session.add(batch)
-        self.session.commit()
 
         return {
             "batch_id": batch.id,
