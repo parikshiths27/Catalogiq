@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   UploadCloud,
   AlertTriangle,
@@ -78,6 +79,8 @@ export const UploadShell: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
+  const queryClient = useQueryClient();
+
   // Poll batch status every 1.5s until terminal state
   useEffect(() => {
     if (!batchId) return;
@@ -92,6 +95,11 @@ export const UploadShell: React.FC = () => {
         // Terminal state reached
         if (['completed', 'partially_completed', 'failed', 'cancelled'].includes(data.status.toLowerCase())) {
           clearInterval(intervalId);
+          queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+          queryClient.invalidateQueries({ queryKey: ['products-list'] });
+          queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
+          queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
+          queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
         }
       } catch (err) {
         console.error("Batch polling error:", err);
@@ -101,7 +109,7 @@ export const UploadShell: React.FC = () => {
     pollBatch();
     const intervalId = setInterval(pollBatch, 1500);
     return () => clearInterval(intervalId);
-  }, [batchId]);
+  }, [batchId, queryClient]);
 
   const isFileSupported = (file: File): { supported: boolean; reason?: string } => {
     const fileNameLower = file.name.toLowerCase();

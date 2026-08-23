@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import {
   LayoutDashboard,
   Database,
@@ -64,9 +65,9 @@ interface RecentProductItem {
 
 interface OverviewData {
   kpis: OverviewKpis;
-  processing_activity: ProcessingActivityItem[];
   review_summary: ReviewSummary;
   catalog_quality_summary: CatalogQualitySummary;
+  processing_activity: ProcessingActivityItem[];
   recent_products: RecentProductItem[];
 }
 
@@ -149,103 +150,94 @@ function normalizeOverviewData(raw: any): OverviewData {
 
 export const DashboardShell: React.FC = () => {
   const navigate = useNavigate();
-  const [data, setData] = useState<OverviewData | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<DashboardErrorState | null>(null);
 
-  const fetchOverview = async () => {
-    setLoading(true);
-    setError(null);
+  const {
+    data,
+    isLoading: loading,
+    error,
+    refetch,
+    isFetching,
+  } = useQuery<OverviewData, DashboardErrorState>({
+    queryKey: ['overview-summary'],
+    queryFn: async () => {
+      let res: Response;
+      const url = apiUrl('/api/v1/overview/summary');
 
-    let res: Response | null = null;
-    const url = apiUrl('/api/v1/overview/summary');
-
-    // 1. Network / Request Execution
-    try {
-      res = await fetch(url);
-    } catch (networkErr: any) {
-      console.error('[Overview Dashboard] Network error during fetch:', {
-        url,
-        error: networkErr,
-      });
-      setError({
-        category: 'network',
-        categoryLabel: 'Network / Connection Error',
-        message: 'Could not connect to backend server. Please verify your internet connection or backend availability.',
-        details: networkErr?.message || String(networkErr),
-      });
-      setLoading(false);
-      return;
-    }
-
-    // 2. HTTP Status Check
-    if (!res.ok) {
-      let errorBody = '';
+      // 1. Network / Request Execution
       try {
-        errorBody = await res.text();
-      } catch {
-        // ignore text read failure
+        res = await fetch(url);
+      } catch (networkErr: any) {
+        console.error('[Overview Dashboard] Network error during fetch:', {
+          url,
+          error: networkErr,
+        });
+        throw {
+          category: 'network',
+          categoryLabel: 'Network / Connection Error',
+          message: 'Could not connect to backend server. Please verify your internet connection or backend availability.',
+          details: networkErr?.message || String(networkErr),
+        } as DashboardErrorState;
       }
-      console.error('[Overview Dashboard] HTTP error response:', {
-        status: res.status,
-        statusText: res.statusText,
-        url,
-        body: errorBody,
-      });
-      setError({
-        category: 'http',
-        categoryLabel: `HTTP Error (${res.status})`,
-        message: `Backend service returned error status ${res.status} (${res.statusText}).`,
-        details: errorBody ? errorBody.slice(0, 300) : undefined,
-        statusCode: res.status,
-      });
-      setLoading(false);
-      return;
-    }
 
-    // 3. JSON Parsing Check
-    let rawJson: any = null;
-    try {
-      rawJson = await res.json();
-    } catch (jsonErr: any) {
-      console.error('[Overview Dashboard] JSON parsing error on HTTP 200 response:', {
-        url,
-        error: jsonErr,
-      });
-      setError({
-        category: 'json',
-        categoryLabel: 'JSON Parse Error',
-        message: 'Server returned HTTP 200, but response body was not valid JSON.',
-        details: jsonErr?.message || String(jsonErr),
-      });
-      setLoading(false);
-      return;
-    }
+      // 2. HTTP Status Check
+      if (!res.ok) {
+        let errorBody = '';
+        try {
+          errorBody = await res.text();
+        } catch {
+          // ignore text read failure
+        }
+        console.error('[Overview Dashboard] HTTP error response:', {
+          status: res.status,
+          statusText: res.statusText,
+          url,
+          body: errorBody,
+        });
+        throw {
+          category: 'http',
+          categoryLabel: `HTTP Error (${res.status})`,
+          message: `Backend service returned error status ${res.status} (${res.statusText}).`,
+          details: errorBody ? errorBody.slice(0, 300) : undefined,
+          statusCode: res.status,
+        } as DashboardErrorState;
+      }
 
-    // 4. Response Schema & Data Normalization
-    try {
-      const summaryData = normalizeOverviewData(rawJson);
-      setData(summaryData);
-    } catch (schemaErr: any) {
-      console.error('[Overview Dashboard] Response schema mismatch:', {
-        url,
-        rawJson,
-        error: schemaErr,
-      });
-      setError({
-        category: 'schema',
-        categoryLabel: 'Response Schema Error',
-        message: 'Overview data structure returned by backend is missing required fields.',
-        details: schemaErr?.message || String(schemaErr),
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
+      // 3. JSON Parsing Check
+      let rawJson: any = null;
+      try {
+        rawJson = await res.json();
+      } catch (jsonErr: any) {
+        console.error('[Overview Dashboard] JSON parsing error on HTTP 200 response:', {
+          url,
+          error: jsonErr,
+        });
+        throw {
+          category: 'json',
+          categoryLabel: 'JSON Parse Error',
+          message: 'Server returned HTTP 200, but response body was not valid JSON.',
+          details: jsonErr?.message || String(jsonErr),
+        } as DashboardErrorState;
+      }
 
-  useEffect(() => {
-    fetchOverview();
-  }, []);
+      // 4. Response Schema & Data Normalization
+      try {
+        return normalizeOverviewData(rawJson);
+      } catch (schemaErr: any) {
+        console.error('[Overview Dashboard] Response schema mismatch:', {
+          url,
+          rawJson,
+          error: schemaErr,
+        });
+        throw {
+          category: 'schema',
+          categoryLabel: 'Response Schema Error',
+          message: 'Overview data structure returned by backend is missing required fields.',
+          details: schemaErr?.message || String(schemaErr),
+        } as DashboardErrorState;
+      }
+    },
+    staleTime: 30000,
+  });
 
   if (loading) {
     return (
@@ -301,7 +293,7 @@ export const DashboardShell: React.FC = () => {
             )}
           </div>
           <button
-            onClick={fetchOverview}
+            onClick={() => refetch()}
             className="px-4 py-2 bg-destructive text-destructive-foreground hover:opacity-90 font-medium text-xs uppercase tracking-widest flex items-center gap-2 border border-destructive transition"
           >
             <RefreshCw className="w-4 h-4" /> Retry
@@ -397,10 +389,10 @@ export const DashboardShell: React.FC = () => {
               );
             })}
             <button
-              onClick={fetchOverview}
+              onClick={() => refetch()}
               className="h-10 border border-border bg-background px-5 text-xs uppercase tracking-widest font-medium text-muted-foreground hover:text-foreground hover:bg-card transition flex items-center gap-2"
             >
-              <RefreshCw className="w-3.5 h-3.5 text-[#9B8F77]" /> Refresh
+              <RefreshCw className={`w-3.5 h-3.5 text-[#9B8F77] ${isFetching ? 'animate-spin' : ''}`} /> Refresh
             </button>
           </div>
         </div>

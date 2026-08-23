@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Database,
   Search,
@@ -64,17 +65,10 @@ interface EvidenceItem {
 }
 
 export const ProductsShell: React.FC = () => {
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const paramProductId = searchParams.get('product_id') || searchParams.get('product');
 
-  const [products, setProducts] = useState<ProductItem[]>([]);
-  const [selectedProduct, setSelectedProduct] = useState<ProductItem | null>(null);
-  const [attributes, setAttributes] = useState<ProductAttributeItem[]>([]);
-  const [evidenceList, setEvidenceList] = useState<EvidenceItem[]>([]);
-  const [validationIssues, setValidationIssues] = useState<any[]>([]);
-  const [enrichmentData, setEnrichmentData] = useState<any>(null);
-  const [validationSummary, setValidationSummary] = useState<any>(null);
-  const [loading, setLoading] = useState<boolean>(true);
   const [selectedAttrId, setSelectedAttrId] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState<boolean>(false);
   const [exportingFormat, setExportingFormat] = useState<string | null>(null);
@@ -93,9 +87,47 @@ export const ProductsShell: React.FC = () => {
   // Detail Active Tab
   const [activeTab, setActiveTab] = useState<'enrichment' | 'attributes' | 'reconciliation' | 'validation'>('enrichment');
 
-  useEffect(() => {
-    fetchProducts();
-  }, []);
+  // 1. Fetch Products List with React Query
+  const {
+    data: products = [],
+    isLoading: loading,
+    isFetching: isFetchingProducts,
+    refetch: refetchProducts,
+  } = useQuery<ProductItem[]>({
+    queryKey: ['products-list'],
+    queryFn: async () => {
+      const res = await fetch(apiUrl('/api/v1/products?limit=50'));
+      if (!res.ok) throw new Error('Failed to fetch products');
+      return res.json();
+    },
+    staleTime: 30000,
+  });
+
+  const activeProductId = paramProductId || null;
+
+  // 2. Fetch Selected Product Details with React Query (runs in parallel with product list)
+  const {
+    data: productDetailsData,
+    isLoading: loadingDetails,
+  } = useQuery({
+    queryKey: ['product-details', activeProductId],
+    queryFn: async () => {
+      if (!activeProductId) return null;
+      const res = await fetch(apiUrl(`/api/v1/products/${activeProductId}/details`));
+      if (!res.ok) throw new Error('Failed to fetch product details');
+      return res.json();
+    },
+    enabled: !!activeProductId,
+    staleTime: 30000,
+  });
+
+  const selectedProduct: ProductItem | null =
+    productDetailsData?.product || products.find((p) => p.id === activeProductId) || null;
+  const attributes: ProductAttributeItem[] = productDetailsData?.attributes || [];
+  const evidenceList: EvidenceItem[] = productDetailsData?.evidence || [];
+  const validationIssues: any[] = productDetailsData?.validation?.issues || [];
+  const validationSummary: any = productDetailsData?.validation || null;
+  const enrichmentData: any = productDetailsData?.enrichment || null;
 
   // Handle click outside of export dropdowns
   useEffect(() => {
@@ -112,26 +144,6 @@ export const ProductsShell: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const fetchProducts = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch(apiUrl('/api/v1/products?limit=250'));
-      if (res.ok) {
-        const data: ProductItem[] = await res.json();
-        setProducts(data);
-
-        if (paramProductId) {
-          const match = data.find((p) => p.id === paramProductId);
-          if (match) selectProduct(match);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch products:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleClearAllProducts = async () => {
     if (!window.confirm("Are you sure you want to reset the catalog? This will remove all products, extracted attributes, and validation records.")) {
       return;
@@ -140,7 +152,11 @@ export const ProductsShell: React.FC = () => {
       setClearingCatalog(true);
       const res = await fetch(apiUrl('/api/v1/products/clear-all'), { method: 'DELETE' });
       if (res.ok) {
-        setProducts([]);
+        queryClient.invalidateQueries({ queryKey: ['products-list'] });
+        queryClient.invalidateQueries({ queryKey: ['product-details'] });
+        queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+        queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
+        queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
         clearSelection();
       }
     } catch (err) {
@@ -150,48 +166,13 @@ export const ProductsShell: React.FC = () => {
     }
   };
 
-  const selectProduct = async (prod: ProductItem) => {
-    setSelectedProduct(prod);
+  const selectProduct = (prod: ProductItem) => {
     setSelectedAttrId(null);
     setSearchParams({ product_id: prod.id });
-
-    try {
-      const res = await fetch(apiUrl(`/api/v1/products/${prod.id}/details`));
-      if (res.ok) {
-        const data = await res.json();
-        if (data.product) setSelectedProduct(data.product);
-        if (data.attributes) setAttributes(data.attributes);
-        if (data.evidence) setEvidenceList(data.evidence);
-        if (data.validation) {
-          setValidationIssues(data.validation.issues || []);
-          setValidationSummary(data.validation);
-        }
-        if (data.enrichment) setEnrichmentData(data.enrichment);
-      } else {
-        // Fallback for older endpoints
-        const [attrRes, evidRes, valRes, enrichRes] = await Promise.all([
-          fetch(apiUrl(`/api/v1/products/${prod.id}/attributes`)),
-          fetch(apiUrl(`/api/v1/products/${prod.id}/evidence`)),
-          fetch(apiUrl(`/api/v1/products/${prod.id}/validation`)),
-          fetch(apiUrl(`/api/v1/products/${prod.id}/enrichment`)),
-        ]);
-
-        if (attrRes.ok) setAttributes(await attrRes.json());
-        if (evidRes.ok) setEvidenceList(await evidRes.json());
-        if (valRes.ok) {
-          const valData = await valRes.json();
-          setValidationIssues(valData.issues || []);
-          setValidationSummary(valData);
-        }
-        if (enrichRes.ok) setEnrichmentData(await enrichRes.json());
-      }
-    } catch (err) {
-      console.error('Failed to fetch product details:', err);
-    }
   };
 
   const clearSelection = () => {
-    setSelectedProduct(null);
+    setSelectedAttrId(null);
     setSearchParams({});
   };
 
@@ -199,7 +180,13 @@ export const ProductsShell: React.FC = () => {
     if (!selectedProduct) return;
     try {
       const res = await fetch(apiUrl(`/api/v1/products/${selectedProduct.id}/validate`), { method: 'POST' });
-      if (res.ok) selectProduct(selectedProduct);
+      if (res.ok) {
+        queryClient.invalidateQueries({ queryKey: ['product-details', selectedProduct.id] });
+        queryClient.invalidateQueries({ queryKey: ['products-list'] });
+        queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+        queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
+        queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
+      }
     } catch (err) {
       console.error('Failed to rerun validation:', err);
     }
@@ -209,7 +196,11 @@ export const ProductsShell: React.FC = () => {
     if (!selectedProduct) return;
     try {
       const res = await fetch(apiUrl(`/api/v1/products/${selectedProduct.id}/enrich`), { method: 'POST' });
-      if (res.ok) selectProduct(selectedProduct);
+      if (res.ok) {
+        queryClient.invalidateQueries({ queryKey: ['product-details', selectedProduct.id] });
+        queryClient.invalidateQueries({ queryKey: ['products-list'] });
+        queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+      }
     } catch (err) {
       console.error('Failed to rerun enrichment:', err);
     }
@@ -285,7 +276,7 @@ export const ProductsShell: React.FC = () => {
     (e) => !selectedAttrId || e.attribute_id === selectedAttrId
   );
 
-  if (loading) {
+  if (activeProductId ? loadingDetails : loading) {
     return (
       <div className="space-y-6 animate-pulse text-foreground">
         <div className="h-8 w-64 bg-card border border-border"></div>
@@ -683,7 +674,15 @@ export const ProductsShell: React.FC = () => {
             qualityScore={selectedProduct.quality_score}
             completenessScore={validationSummary?.completeness_score}
             issues={validationIssues}
-            onResolutionCompleted={fetchProducts}
+            onResolutionCompleted={() => {
+              refetchProducts();
+              if (selectedProduct) {
+                queryClient.invalidateQueries({ queryKey: ['product-details', selectedProduct.id] });
+              }
+              queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+              queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
+              queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
+            }}
           />
         )}
       </div>
@@ -809,11 +808,11 @@ export const ProductsShell: React.FC = () => {
           </div>
 
           <button
-            onClick={fetchProducts}
+            onClick={() => refetchProducts()}
             className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-[10px] uppercase tracking-widest font-medium transition duration-150 rounded-none inline-flex items-center gap-1.5"
             title="Refresh product list"
           >
-            <RefreshCw className={`w-3.5 h-3.5 text-[#9B8F77] ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 text-[#9B8F77] ${isFetchingProducts ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
           </button>
 

@@ -1,7 +1,8 @@
 import uuid
 import math
+import concurrent.futures
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlmodel import Session, select, func
@@ -219,67 +220,115 @@ def list_reviews(
     else:
         order_stmt = desc(ValidationResult.created_at)
 
-    # Fetch ONLY the paginated slice
-    val_results = session.exec(
-        base_query.order_by(order_stmt).offset((page - 1) * limit).limit(limit)
-    ).all()
+    bind = session.get_bind()
+    is_sqlite = bind.dialect.name == "sqlite"
 
-    # Pre-cache related Products, Attributes, Documents, Sources ONLY for paginated slice
-    product_ids = {v.product_id for v in val_results}
-    attribute_ids = {v.attribute_id for v in val_results if v.attribute_id}
+    # Task 1: Fetch paginated slice with Product, Attribute, Evidence, Document, and Source via joined queries
+    def run_slice_and_relations(s: Session):
+        # Multi-table join for ValidationResult, Product, and ProductAttribute
+        slice_stmt = (
+            select(ValidationResult, Product, ProductAttribute)
+            .join(Product, Product.id == ValidationResult.product_id)
+            .outerjoin(ProductAttribute, ProductAttribute.id == ValidationResult.attribute_id)
+        )
 
-    products_by_id: Dict[uuid.UUID, Product] = {}
-    if product_ids:
-        for p in session.exec(select(Product).where(Product.id.in_(product_ids))).all():
-            products_by_id[p.id] = p
+        # Apply same filters
+        if status_filter != "all":
+            slice_stmt = slice_stmt.where(ValidationResult.status == status_filter)
+        if product_id:
+            try:
+                slice_stmt = slice_stmt.where(ValidationResult.product_id == uuid.UUID(product_id))
+            except ValueError:
+                pass
+        if severity:
+            slice_stmt = slice_stmt.where(ValidationResult.severity == severity)
+        if issue_type and issue_type != "all":
+            if issue_type == "cross_source_conflict":
+                slice_stmt = slice_stmt.where(ValidationResult.validation_type.in_(conflict_val_types))
+            elif issue_type == "low_confidence":
+                slice_stmt = slice_stmt.where(ValidationResult.validation_type.in_(low_conf_types))
+            elif issue_type == "missing_attribute":
+                slice_stmt = slice_stmt.where(ValidationResult.validation_type.in_(missing_types))
+            else:
+                slice_stmt = slice_stmt.where(ValidationResult.validation_type == issue_type)
+        if search:
+            s_pat = f"%{search.strip()}%"
+            slice_stmt = slice_stmt.where(
+                or_(
+                    ValidationResult.message.ilike(s_pat),
+                    Product.product_name.ilike(s_pat),
+                    Product.sku.ilike(s_pat),
+                    Product.brand.ilike(s_pat),
+                )
+            )
 
-    attrs_by_id: Dict[uuid.UUID, ProductAttribute] = {}
-    if attribute_ids:
-        for a in session.exec(select(ProductAttribute).where(ProductAttribute.id.in_(attribute_ids))).all():
-            attrs_by_id[a.id] = a
+        joined_slice = s.exec(
+            slice_stmt.order_by(order_stmt).offset((page - 1) * limit).limit(limit)
+        ).all()
 
-    # Pre-fetch evidence records
-    evidences_by_attr: Dict[uuid.UUID, List[AttributeEvidence]] = {}
-    if attribute_ids:
-        ev_list = session.exec(select(AttributeEvidence).where(AttributeEvidence.attribute_id.in_(attribute_ids))).all()
-        for ev in ev_list:
-            evidences_by_attr.setdefault(ev.attribute_id, []).append(ev)
+        attribute_ids = [val.attribute_id for val, prod, attr in joined_slice if val.attribute_id]
+        evidences_map: Dict[uuid.UUID, List[Tuple[AttributeEvidence, Optional[Document], Optional[Source]]]] = {}
 
-    # Pre-fetch documents and sources
-    doc_ids = {ev.document_id for evs in evidences_by_attr.values() for ev in evs if ev.document_id}
-    source_ids = {ev.source_id for evs in evidences_by_attr.values() for ev in evs if ev.source_id}
+        if attribute_ids:
+            ev_rows = s.exec(
+                select(AttributeEvidence, Document, Source)
+                .outerjoin(Document, Document.id == AttributeEvidence.document_id)
+                .outerjoin(Source, Source.id == AttributeEvidence.source_id)
+                .where(AttributeEvidence.attribute_id.in_(attribute_ids))
+            ).all()
+            for ev, doc, src in ev_rows:
+                evidences_map.setdefault(ev.attribute_id, []).append((ev, doc, src))
 
-    docs_by_id: Dict[uuid.UUID, Document] = {}
-    if doc_ids:
-        for d in session.exec(select(Document).where(Document.id.in_(doc_ids))).all():
-            docs_by_id[d.id] = d
+        return joined_slice, evidences_map
 
-    sources_by_id: Dict[uuid.UUID, Source] = {}
-    if source_ids:
-        for s in session.exec(select(Source).where(Source.id.in_(source_ids))).all():
-            sources_by_id[s.id] = s
+    # Task 2: Compute total items and summary KPI counts
+    def run_kpis_and_totals(s: Session):
+        tot = s.exec(select(func.count()).select_from(base_query.subquery())).one() or 0
+        kpis = s.exec(
+            select(
+                func.coalesce(func.sum(case((ValidationResult.status == ValidationStatus.open, 1), else_=0)), 0),
+                func.coalesce(func.sum(case((ValidationResult.status == ValidationStatus.resolved, 1), else_=0)), 0),
+                func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(conflict_val_types)), 1), else_=0)), 0),
+                func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(low_conf_types)), 1), else_=0)), 0),
+                func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(missing_types)), 1), else_=0)), 0),
+            )
+        ).first()
+        prods_needing = s.exec(
+            select(func.count(distinct(ValidationResult.product_id))).where(ValidationResult.status == ValidationStatus.open)
+        ).one() or 0
+        return tot, kpis, prods_needing
+
+    if is_sqlite:
+        joined_slice, evidences_map = run_slice_and_relations(session)
+        total_items, kpi_row, products_needing_review = run_kpis_and_totals(session)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            def exec_with_session(fn):
+                with Session(bind) as s:
+                    return fn(s)
+
+            f_slice = executor.submit(lambda: exec_with_session(run_slice_and_relations))
+            f_kpis = executor.submit(lambda: exec_with_session(run_kpis_and_totals))
+
+            joined_slice, evidences_map = f_slice.result()
+            total_items, kpi_row, products_needing_review = f_kpis.result()
 
     review_items: List[ReviewItemSchema] = []
 
-    for val in val_results:
-        prod = products_by_id.get(val.product_id)
+    for val, prod, attr in joined_slice:
         if not prod:
             continue
 
-        attr = attrs_by_id.get(val.attribute_id) if val.attribute_id else None
         attr_status_str = attr.status.value if attr and hasattr(attr.status, "value") else (str(attr.status) if attr else None)
         attr_confidence = attr.confidence if attr else None
 
         val_type_str = val.validation_type.value if hasattr(val.validation_type, "value") else str(val.validation_type)
         cat_type = classify_issue_category(val_type_str, attr_status_str, attr_confidence)
 
-        # Build evidence items
+        # Build evidence items from pre-joined map
         ev_items: List[EvidenceSummarySchema] = []
-        if val.attribute_id and val.attribute_id in evidences_by_attr:
-            for ev in evidences_by_attr[val.attribute_id]:
-                doc_obj = docs_by_id.get(ev.document_id) if ev.document_id else None
-                src_obj = sources_by_id.get(ev.source_id) if ev.source_id else None
-
+        if val.attribute_id and val.attribute_id in evidences_map:
+            for ev, doc_obj, src_obj in evidences_map[val.attribute_id]:
                 ev_items.append(
                     EvidenceSummarySchema(
                         id=str(ev.id),
@@ -305,51 +354,47 @@ def list_reviews(
             })
         if val.expected_value is not None:
             competing_claims.append({
-                "claim_type": "expected_canonical",
-                "label": "Expected / Competing Claim (Source B)",
+                "claim_type": "rule_expectation",
+                "label": "Rule Requirement (Taxonomy Standard)",
                 "value": val.expected_value,
-                "trust_level": 0.70,
+                "trust_level": 1.0,
             })
 
-        review_items.append(
-            ReviewItemSchema(
-                validation_id=str(val.id),
-                product_id=str(prod.id),
-                product_name=prod.product_name,
-                brand=prod.brand,
-                sku=prod.sku,
-                category=prod.category,
-                attribute_id=str(attr.id) if attr else None,
-                attribute_name=attr.attribute_name if attr else None,
-                display_name=attr.display_name if attr else (val.attribute_id and str(val.attribute_id) or val_type_str),
-                category_type=cat_type,
-                validation_type=val_type_str,
-                status=str(val.status.value if hasattr(val.status, "value") else val.status),
-                severity=str(val.severity.value if hasattr(val.severity, "value") else val.severity),
-                message=val.message,
-                actual_value=val.actual_value if val.actual_value is not None else (attr.raw_value if attr else None),
-                expected_value=val.expected_value,
-                current_value=attr.raw_value if attr else val.actual_value,
-                confidence=attr_confidence,
-                product_quality_score=prod.quality_score,
-                created_at=val.created_at,
-                resolved_at=val.resolved_at,
-                resolved_by=val.resolved_by,
-                evidence=ev_items,
-                competing_claims=competing_claims,
-            )
-        )
+        if not competing_claims and attr and attr.raw_value:
+            competing_claims.append({
+                "claim_type": "extracted_attribute",
+                "label": f"Current Value ({attr.display_name or attr.attribute_name})",
+                "value": attr.raw_value,
+                "trust_level": attr.confidence or 0.85,
+            })
 
-    # 3. Calculate KPI summary counts via SQL Aggregation
-    kpi_row = session.exec(
-        select(
-            func.coalesce(func.sum(case((ValidationResult.status == ValidationStatus.open, 1), else_=0)), 0),
-            func.coalesce(func.sum(case((ValidationResult.status == ValidationStatus.resolved, 1), else_=0)), 0),
-            func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(conflict_val_types)), 1), else_=0)), 0),
-            func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(low_conf_types)), 1), else_=0)), 0),
-            func.coalesce(func.sum(case((and_(ValidationResult.status == ValidationStatus.open, ValidationResult.validation_type.in_(missing_types)), 1), else_=0)), 0),
+        item = ReviewItemSchema(
+            validation_id=str(val.id),
+            product_id=str(prod.id),
+            product_name=prod.product_name,
+            brand=prod.brand,
+            sku=prod.sku,
+            category=prod.category,
+            attribute_id=str(val.attribute_id) if val.attribute_id else None,
+            attribute_name=attr.attribute_name if attr else None,
+            display_name=attr.display_name if attr else (val.attribute_id and str(val.attribute_id) or val_type_str),
+            category_type=cat_type,
+            validation_type=val_type_str,
+            status=str(val.status.value if hasattr(val.status, "value") else val.status),
+            severity=str(val.severity.value if hasattr(val.severity, "value") else val.severity),
+            message=val.message,
+            actual_value=val.actual_value if val.actual_value is not None else (attr.raw_value if attr else None),
+            expected_value=val.expected_value,
+            current_value=attr.raw_value if attr else val.actual_value,
+            confidence=attr_confidence,
+            product_quality_score=prod.quality_score,
+            created_at=val.created_at,
+            resolved_at=val.resolved_at,
+            resolved_by=val.resolved_by,
+            evidence=ev_items,
+            competing_claims=competing_claims,
         )
-    ).first()
+        review_items.append(item)
 
     total_open_issues = int(kpi_row[0] or 0)
     resolved_count = int(kpi_row[1] or 0)
@@ -357,10 +402,6 @@ def list_reviews(
     low_confidence_issues = int(kpi_row[3] or 0)
     missing_required_attributes = int(kpi_row[4] or 0)
     validation_issues = max(0, total_open_issues - cross_source_conflicts - low_confidence_issues - missing_required_attributes)
-
-    products_needing_review = session.exec(
-        select(func.count(distinct(ValidationResult.product_id))).where(ValidationResult.status == ValidationStatus.open)
-    ).one() or 0
 
     summary_counts = ReviewSummaryCountsSchema(
         total_open_issues=total_open_issues,

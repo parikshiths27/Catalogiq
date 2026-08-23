@@ -1,5 +1,6 @@
 import json
 import uuid
+import concurrent.futures
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,6 +14,7 @@ from app.models import (
     Document,
     EnrichmentResult,
     Product,
+    ProductListItem,
     ProductAttribute,
     ProductDocumentAssociation,
     ProductStatus,
@@ -91,10 +93,10 @@ class ResolutionRequest(BaseModel):
     notes: Optional[str] = None
 
 
-@router.get("", response_model=List[Product])
-@router.get("/", response_model=List[Product])
+@router.get("", response_model=List[ProductListItem])
+@router.get("/", response_model=List[ProductListItem])
 def list_products(
-    limit: int = 10000,
+    limit: int = 50,
     offset: int = 0,
     status: Optional[str] = None,
     brand: Optional[str] = None,
@@ -104,7 +106,7 @@ def list_products(
     session: Session = Depends(get_session),
 ):
     repo = ProductRepository(session)
-    return repo.list_products(
+    return repo.list_catalog_items(
         limit=limit,
         offset=offset,
         status=status,
@@ -413,27 +415,74 @@ def get_product_complete_details(product_id: uuid.UUID, session: Session = Depen
     - Evidence
     - Validation summary
     - Enrichment
+    Optimized with concurrent connection pool execution.
     """
-    repo = ProductRepository(session)
-    product = repo.get_by_id(product_id)
-    if not product:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Product with ID {product_id} not found",
-        )
+    import concurrent.futures
+    from app.db.session import engine
 
-    attributes = repo.get_attributes(product_id)
-    attr_repo = AttributeRepository(session)
-    evidence = attr_repo.get_evidence_for_product(product_id)
-    validations = repo.get_validations(product_id)
+    bind = session.get_bind()
+    is_sqlite = bind.dialect.name == "sqlite"
+
+    def run_product(s: Session):
+        return ProductRepository(s).get_by_id(product_id)
+
+    def run_attributes(s: Session):
+        return ProductRepository(s).get_attributes(product_id)
+
+    def run_evidence(s: Session):
+        return AttributeRepository(s).get_evidence_for_product(product_id)
+
+    def run_validations(s: Session):
+        return ProductRepository(s).get_validations(product_id)
+
+    def run_enrichment(s: Session):
+        stmt = select(EnrichmentResult).where(
+            EnrichmentResult.product_id == product_id
+        ).order_by(EnrichmentResult.created_at.desc())
+        return s.exec(stmt).first()
+
+    if is_sqlite:
+        product = run_product(session)
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Product with ID {product_id} not found",
+            )
+        attributes = run_attributes(session)
+        evidence = run_evidence(session)
+        validations = run_validations(session)
+        enrichment = run_enrichment(session)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            def exec_with_session(fn):
+                with Session(bind) as s:
+                    return fn(s)
+
+            f_prod = executor.submit(lambda: exec_with_session(run_product))
+            f_attr = executor.submit(lambda: exec_with_session(run_attributes))
+            f_evid = executor.submit(lambda: exec_with_session(run_evidence))
+            f_vals = executor.submit(lambda: exec_with_session(run_validations))
+            f_enr = executor.submit(lambda: exec_with_session(run_enrichment))
+
+            product = f_prod.result()
+            if not product:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Product with ID {product_id} not found",
+                )
+
+            attributes = f_attr.result()
+            evidence = f_evid.result()
+            validations = f_vals.result()
+            enrichment = f_enr.result()
 
     # Calculate validation / completeness
     evidence_names = {
         a.attribute_name for a in attributes
         if any(e.attribute_id == a.id and e.evidence_text for e in evidence)
     }
-    engine = ValidationEngine()
-    val_res = engine.validate_product(
+    engine_val = ValidationEngine()
+    val_res = engine_val.validate_product(
         product=product,
         attributes=attributes,
         evidence_supported_attribute_names=evidence_names,
@@ -451,10 +500,6 @@ def get_product_complete_details(product_id: uuid.UUID, session: Session = Depen
     }
 
     # Enrichment
-    stmt = select(EnrichmentResult).where(
-        EnrichmentResult.product_id == product_id
-    ).order_by(EnrichmentResult.created_at.desc())
-    enrichment = session.exec(stmt).first()
     gen_data = {}
     if enrichment and enrichment.generated_value:
         try:

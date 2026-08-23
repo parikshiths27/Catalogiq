@@ -1,7 +1,7 @@
 import uuid
 from typing import Optional, List
 from sqlmodel import Session, select, and_
-from app.models import Product, ProductAttribute, ValidationResult, ProductVersion, DuplicateCandidate
+from app.models import Product, ProductStatus, ProductListItem, ProductAttribute, ValidationResult, ProductVersion, DuplicateCandidate
 
 class ProductRepository:
     def __init__(self, session: Session):
@@ -13,6 +13,55 @@ class ProductRepository:
     def get_by_sku_brand(self, sku: str, brand: str) -> Optional[Product]:
         statement = select(Product).where(and_(Product.sku == sku, Product.brand == brand))
         return self.session.exec(statement).first()
+
+    def list_catalog_items(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: Optional[str] = None,
+        brand: Optional[str] = None,
+        category: Optional[str] = None,
+        quality_score_min: Optional[float] = None,
+        quality_score_max: Optional[float] = None,
+    ) -> List[ProductListItem]:
+        statement = select(
+            Product.id,
+            Product.product_name,
+            Product.brand,
+            Product.sku,
+            Product.category,
+            Product.status,
+            Product.quality_score,
+            Product.updated_at,
+        )
+        conditions = []
+        if status:
+            conditions.append(Product.status == status)
+        if brand:
+            conditions.append(Product.brand == brand)
+        if category:
+            conditions.append(Product.category == category)
+        if quality_score_min is not None:
+            conditions.append(Product.quality_score >= quality_score_min)
+        if quality_score_max is not None:
+            conditions.append(Product.quality_score <= quality_score_max)
+        if conditions:
+            statement = statement.where(and_(*conditions))
+        statement = statement.order_by(Product.updated_at.desc()).offset(offset).limit(limit)
+        rows = self.session.exec(statement).all()
+        return [
+            ProductListItem(
+                id=r[0],
+                product_name=r[1],
+                brand=r[2],
+                sku=r[3],
+                category=r[4],
+                status=r[5].value if hasattr(r[5], "value") else str(r[5]),
+                quality_score=float(r[6]),
+                updated_at=r[7],
+            )
+            for r in rows
+        ]
 
     def list_products(
         self, 

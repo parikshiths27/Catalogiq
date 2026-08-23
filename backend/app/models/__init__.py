@@ -1,7 +1,7 @@
 from .source import Source, SourceType
 from .document import Document, DocumentStatus, ProductDocumentAssociation
 from .batch import IngestionBatch, BatchStatus, IngestionBatchItem, BatchItemStatus
-from .product import Product, ProductStatus
+from .product import Product, ProductStatus, ProductListItem
 from .intelligence import ProductAttribute, AttributeEvidence, AttributeDataType, AttributeStatus
 from .validation import ValidationResult, ValidationType, ValidationSeverity, ValidationStatus
 from .enrichment import EnrichmentResult, EnrichmentType, EnrichmentStatus
@@ -13,7 +13,7 @@ __all__ = [
     "Source", "SourceType",
     "Document", "DocumentStatus", "ProductDocumentAssociation",
     "IngestionBatch", "BatchStatus", "IngestionBatchItem", "BatchItemStatus",
-    "Product", "ProductStatus",
+    "Product", "ProductStatus", "ProductListItem",
     "ProductAttribute", "AttributeEvidence", "AttributeDataType", "AttributeStatus",
     "ValidationResult", "ValidationType", "ValidationSeverity", "ValidationStatus",
     "EnrichmentResult", "EnrichmentType", "EnrichmentStatus",

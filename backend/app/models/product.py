@@ -45,3 +45,15 @@ class Product(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), index=True, nullable=False)
     )
+
+
+class ProductListItem(SQLModel):
+    id: uuid.UUID
+    product_name: str
+    brand: str
+    sku: str
+    category: str
+    status: str
+    quality_score: float
+    updated_at: datetime
+

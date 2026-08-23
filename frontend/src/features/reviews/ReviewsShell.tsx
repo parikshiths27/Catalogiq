@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   Search,
@@ -118,16 +119,11 @@ const VALIDATION_TYPE_META: Record<string, { label: string; explanation: string 
   },
 };
 
-let cachedTaxonomies: string[] | null = null;
-
 export const ReviewsShell: React.FC = () => {
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const paramProductId = searchParams.get('product_id');
   const paramIssueType = searchParams.get('issue_type');
-
-  const [data, setData] = useState<ReviewsResponse | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState<string>('open');
@@ -141,16 +137,29 @@ export const ReviewsShell: React.FC = () => {
   const [customValueInput, setCustomValueInput] = useState<string>('');
   const [showCustomInput, setShowCustomInput] = useState<boolean>(false);
   const [resolutionSuccess, setResolutionSuccess] = useState<string | null>(null);
-
-  // Approved taxonomies list from backend
-  const [approvedTaxonomies, setApprovedTaxonomies] = useState<string[]>([]);
   const [taxonomySearch, setTaxonomySearch] = useState<string>('');
 
-  const fetchReviews = async () => {
-    try {
-      setLoading(true);
-      setError(null);
+  // 1. Fetch Approved Taxonomies with React Query (cached indefinitely)
+  const { data: approvedTaxonomies = [] } = useQuery<string[]>({
+    queryKey: ['approved-taxonomies'],
+    queryFn: async () => {
+      const res = await fetch(apiUrl('/api/v1/reviews/approved-taxonomies'));
+      if (!res.ok) throw new Error('Failed to fetch approved taxonomies');
+      return res.json();
+    },
+    staleTime: Infinity,
+  });
 
+  // 2. Fetch Reviews List with React Query
+  const {
+    data,
+    isLoading: loading,
+    error: queryError,
+    refetch: fetchReviews,
+    isFetching,
+  } = useQuery<ReviewsResponse>({
+    queryKey: ['reviews-list', { statusFilter, categoryFilter, search: searchQuery.trim(), paramProductId, paramIssueType }],
+    queryFn: async () => {
       const params = new URLSearchParams();
       if (statusFilter !== 'all') params.append('status', statusFilter);
       if (categoryFilter !== 'all') params.append('category', categoryFilter);
@@ -160,40 +169,12 @@ export const ReviewsShell: React.FC = () => {
 
       const res = await fetch(apiUrl(`/api/v1/reviews?${params.toString()}`));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const reviewData: ReviewsResponse = await res.json();
-      setData(reviewData);
-    } catch (err: any) {
-      console.error('Failed to fetch reviews:', err);
-      setError(err?.message || 'Failed to load review items');
-    } finally {
-      setLoading(false);
-    }
-  };
+      return res.json();
+    },
+    staleTime: 30000,
+  });
 
-  const fetchApprovedTaxonomies = async () => {
-    if (cachedTaxonomies && cachedTaxonomies.length > 0) {
-      setApprovedTaxonomies(cachedTaxonomies);
-      return;
-    }
-    try {
-      const res = await fetch(apiUrl('/api/v1/reviews/approved-taxonomies'));
-      if (res.ok) {
-        const list: string[] = await res.json();
-        cachedTaxonomies = list;
-        setApprovedTaxonomies(list);
-      }
-    } catch (err) {
-      console.error('Failed to fetch approved taxonomies:', err);
-    }
-  };
-
-  useEffect(() => {
-    fetchReviews();
-  }, [statusFilter, categoryFilter, paramProductId, paramIssueType]);
-
-  useEffect(() => {
-    fetchApprovedTaxonomies();
-  }, []);
+  const error = queryError instanceof Error ? queryError.message : (queryError ? String(queryError) : null);
 
   const openResolutionModal = (item: ReviewItem) => {
     setSelectedReview(item);
@@ -256,10 +237,15 @@ export const ReviewsShell: React.FC = () => {
       }
 
       setResolutionSuccess('Issue resolved and verified successfully in database!');
+      queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
+      queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
+      queryClient.invalidateQueries({ queryKey: ['product-details'] });
+      queryClient.invalidateQueries({ queryKey: ['products-list'] });
+
       setTimeout(() => {
         setSelectedReview(null);
         setResolutionSuccess(null);
-        fetchReviews();
       }, 700);
     } catch (err: any) {
       alert(`Error resolving: ${err?.message}`);
@@ -299,11 +285,11 @@ export const ReviewsShell: React.FC = () => {
         </div>
 
         <button
-          onClick={fetchReviews}
+          onClick={() => fetchReviews()}
           className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-xs uppercase tracking-widest font-medium transition rounded-none flex items-center gap-2 self-start sm:self-auto"
           title="Refresh Review Queue"
         >
-          <RefreshCw className="w-3.5 h-3.5 text-[#9B8F77]" />
+          <RefreshCw className={`w-3.5 h-3.5 text-[#9B8F77] ${isFetching ? 'animate-spin' : ''}`} />
           <span>Refresh</span>
         </button>
       </div>

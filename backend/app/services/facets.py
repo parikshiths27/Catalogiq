@@ -4,9 +4,11 @@ Provides high-performance, disjunctive facet aggregation using PostgreSQL GROUP 
 queries for categories, brands, subcategories, status, quality score ranges, and dynamic attributes.
 """
 import logging
+import concurrent.futures
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select, func, or_, and_
+from sqlalchemy import case
 
 from app.models import Product, ProductAttribute, AttributeStatus
 from app.services.keyword_search import KeywordSearchService
@@ -156,75 +158,98 @@ class FacetAggregationService:
 
         matching_ids = self._get_matching_product_ids_for_query(query)
 
-        # 1. Categories Facet (Disjunctive: ignores category filter)
-        cat_conds = self._build_filter_conditions(
-            matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="category"
-        )
-        cat_stmt = select(Product.category, func.count(Product.id)).where(*cat_conds).group_by(Product.category)
-        cat_rows = self.session.exec(cat_stmt).all()
-        categories = [FacetCountItem(value=row[0], count=row[1]) for row in cat_rows if row[0]]
-        categories.sort(key=lambda x: x.count, reverse=True)
+        import concurrent.futures
+        from sqlalchemy import case
+        from app.db.session import engine
 
-        # 2. Brands Facet (Disjunctive: ignores brand filter)
-        brand_conds = self._build_filter_conditions(
-            matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="brand"
-        )
-        brand_stmt = select(Product.brand, func.count(Product.id)).where(*brand_conds).group_by(Product.brand)
-        brand_rows = self.session.exec(brand_stmt).all()
-        brands = [FacetCountItem(value=row[0], count=row[1]) for row in brand_rows if row[0]]
-        brands.sort(key=lambda x: x.count, reverse=True)
+        bind = self.session.get_bind()
+        is_sqlite = bind.dialect.name == "sqlite"
 
-        # 3. Subcategories Facet (Disjunctive: ignores subcategory filter)
-        subcat_conds = self._build_filter_conditions(
-            matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="subcategory"
-        )
-        subcat_stmt = select(Product.subcategory, func.count(Product.id)).where(Product.subcategory.isnot(None), *subcat_conds).group_by(Product.subcategory)
-        subcat_rows = self.session.exec(subcat_stmt).all()
-        subcategories = [FacetCountItem(value=row[0], count=row[1]) for row in subcat_rows if row[0]]
-        subcategories.sort(key=lambda x: x.count, reverse=True)
-
-        # 4. Statuses Facet (Disjunctive: ignores status filter)
-        status_conds = self._build_filter_conditions(
-            matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="status"
-        )
-        status_stmt = select(Product.status, func.count(Product.id)).where(*status_conds).group_by(Product.status)
-        status_rows = self.session.exec(status_stmt).all()
-        statuses = [
-            FacetCountItem(
-                value=row[0].value if hasattr(row[0], "value") else str(row[0]),
-                count=row[1]
+        # 1. Categories Facet
+        def run_categories(s: Session):
+            cat_conds = self._build_filter_conditions(
+                matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="category"
             )
-            for row in status_rows if row[0]
-        ]
-        statuses.sort(key=lambda x: x.count, reverse=True)
+            cat_stmt = select(Product.category, func.count(Product.id)).where(*cat_conds).group_by(Product.category)
+            cat_rows = s.exec(cat_stmt).all()
+            cats = [FacetCountItem(value=row[0], count=row[1]) for row in cat_rows if row[0]]
+            cats.sort(key=lambda x: x.count, reverse=True)
+            return cats
 
-        # 5. Quality Score Ranges Facet (Disjunctive: ignores quality score filter)
-        qual_conds = self._build_filter_conditions(
-            matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="quality"
-        )
-        qual_products = self.session.exec(select(Product.quality_score).where(*qual_conds)).all()
+        # 2. Brands Facet
+        def run_brands(s: Session):
+            brand_conds = self._build_filter_conditions(
+                matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="brand"
+            )
+            brand_stmt = select(Product.brand, func.count(Product.id)).where(*brand_conds).group_by(Product.brand)
+            brand_rows = s.exec(brand_stmt).all()
+            brs = [FacetCountItem(value=row[0], count=row[1]) for row in brand_rows if row[0]]
+            brs.sort(key=lambda x: x.count, reverse=True)
+            return brs
 
-        r1 = sum(1 for q in qual_products if q >= 90.0)
-        r2 = sum(1 for q in qual_products if 80.0 <= q < 90.0)
-        r3 = sum(1 for q in qual_products if 70.0 <= q < 80.0)
-        r4 = sum(1 for q in qual_products if q < 70.0)
+        # 3. Subcategories Facet
+        def run_subcategories(s: Session):
+            subcat_conds = self._build_filter_conditions(
+                matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="subcategory"
+            )
+            subcat_stmt = select(Product.subcategory, func.count(Product.id)).where(Product.subcategory.isnot(None), *subcat_conds).group_by(Product.subcategory)
+            subcat_rows = s.exec(subcat_stmt).all()
+            subcats = [FacetCountItem(value=row[0], count=row[1]) for row in subcat_rows if row[0]]
+            subcats.sort(key=lambda x: x.count, reverse=True)
+            return subcats
 
-        quality_ranges = [
-            QualityScoreRangeItem(label="90-100 Excellent", min=90.0, max=100.0, count=r1),
-            QualityScoreRangeItem(label="80-89 Good", min=80.0, max=89.99, count=r2),
-            QualityScoreRangeItem(label="70-79 Fair", min=70.0, max=79.99, count=r3),
-            QualityScoreRangeItem(label="< 70 Needs Review", min=0.0, max=69.99, count=r4),
-        ]
+        # 4. Statuses Facet
+        def run_statuses(s: Session):
+            status_conds = self._build_filter_conditions(
+                matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="status"
+            )
+            status_stmt = select(Product.status, func.count(Product.id)).where(*status_conds).group_by(Product.status)
+            status_rows = s.exec(status_stmt).all()
+            stats = [
+                FacetCountItem(
+                    value=row[0].value if hasattr(row[0], "value") else str(row[0]),
+                    count=row[1]
+                )
+                for row in status_rows if row[0]
+            ]
+            stats.sort(key=lambda x: x.count, reverse=True)
+            return stats
 
-        # 6. Dynamic Attributes Facets (Top 5 attributes with max 20 values)
-        all_conds = self._build_filter_conditions(
-            matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet=None
-        )
-        ctx_prod_ids = self.session.exec(select(Product.id).where(*all_conds)).all()
+        # 5. Quality Score Ranges (SQL Case Aggregation)
+        def run_quality_ranges(s: Session):
+            qual_conds = self._build_filter_conditions(
+                matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet="quality"
+            )
+            qual_row = s.exec(
+                select(
+                    func.coalesce(func.sum(case((Product.quality_score >= 90.0, 1), else_=0)), 0),
+                    func.coalesce(func.sum(case((and_(Product.quality_score >= 80.0, Product.quality_score < 90.0), 1), else_=0)), 0),
+                    func.coalesce(func.sum(case((and_(Product.quality_score >= 70.0, Product.quality_score < 80.0), 1), else_=0)), 0),
+                    func.coalesce(func.sum(case((Product.quality_score < 70.0, 1), else_=0)), 0),
+                ).where(*qual_conds)
+            ).first()
+            r1 = int(qual_row[0] or 0) if qual_row else 0
+            r2 = int(qual_row[1] or 0) if qual_row else 0
+            r3 = int(qual_row[2] or 0) if qual_row else 0
+            r4 = int(qual_row[3] or 0) if qual_row else 0
 
-        dynamic_attribute_facets: List[DynamicAttributeFacet] = []
-        if ctx_prod_ids:
-            # Find top 5 most frequent attribute names for context products
+            return [
+                QualityScoreRangeItem(label="90-100 Excellent", min=90.0, max=100.0, count=r1),
+                QualityScoreRangeItem(label="80-89 Good", min=80.0, max=89.99, count=r2),
+                QualityScoreRangeItem(label="70-79 Fair", min=70.0, max=79.99, count=r3),
+                QualityScoreRangeItem(label="< 70 Needs Review", min=0.0, max=69.99, count=r4),
+            ]
+
+        # 6. Dynamic Attributes Facets (Single batched group-by query)
+        def run_dynamic_attributes(s: Session):
+            all_conds = self._build_filter_conditions(
+                matching_ids, category_list, brand_list, subcategory_list, status_list, min_quality_score, max_quality_score, exclude_facet=None
+            )
+            ctx_prod_ids = s.exec(select(Product.id).where(*all_conds)).all()
+            if not ctx_prod_ids:
+                return []
+
+            # Find top 5 most frequent attribute names
             top_attrs_stmt = (
                 select(ProductAttribute.attribute_name, ProductAttribute.display_name, ProductAttribute.data_type, func.count(ProductAttribute.id))
                 .where(
@@ -236,33 +261,76 @@ class FacetAggregationService:
                 .order_by(func.count(ProductAttribute.id).desc())
                 .limit(5)
             )
-            top_attrs = self.session.exec(top_attrs_stmt).all()
+            top_attrs = s.exec(top_attrs_stmt).all()
+            if not top_attrs:
+                return []
 
-            for attr_name, disp_name, data_type, _ in top_attrs:
-                # Count raw values for this attribute
-                val_stmt = (
-                    select(ProductAttribute.raw_value, func.count(ProductAttribute.id))
-                    .where(
-                        ProductAttribute.product_id.in_(ctx_prod_ids),
-                        ProductAttribute.attribute_name == attr_name,
-                        ProductAttribute.confidence >= 0.70,
-                        ProductAttribute.status != AttributeStatus.missing,
-                    )
-                    .group_by(ProductAttribute.raw_value)
-                    .order_by(func.count(ProductAttribute.id).desc())
-                    .limit(20)
+            top_names = [r[0] for r in top_attrs]
+            attr_meta = {r[0]: (r[1], r[2]) for r in top_attrs}
+
+            # Single batched query for values of all top attributes
+            val_stmt = (
+                select(ProductAttribute.attribute_name, ProductAttribute.raw_value, func.count(ProductAttribute.id))
+                .where(
+                    ProductAttribute.product_id.in_(ctx_prod_ids),
+                    ProductAttribute.attribute_name.in_(top_names),
+                    ProductAttribute.confidence >= 0.70,
+                    ProductAttribute.status != AttributeStatus.missing,
                 )
-                val_rows = self.session.exec(val_stmt).all()
-                val_items = [FacetCountItem(value=r[0], count=r[1]) for r in val_rows if r[0]]
-                if val_items:
-                    dynamic_attribute_facets.append(
+                .group_by(ProductAttribute.attribute_name, ProductAttribute.raw_value)
+                .order_by(func.count(ProductAttribute.id).desc())
+            )
+            val_rows = s.exec(val_stmt).all()
+
+            # Group values by attribute_name
+            attr_values_map: Dict[str, List[FacetCountItem]] = {}
+            for attr_name, raw_val, cnt in val_rows:
+                if raw_val:
+                    cur_list = attr_values_map.setdefault(attr_name, [])
+                    if len(cur_list) < 20:
+                        cur_list.append(FacetCountItem(value=raw_val, count=cnt))
+
+            facets_list = []
+            for attr_name in top_names:
+                disp_name, data_type = attr_meta[attr_name]
+                v_items = attr_values_map.get(attr_name, [])
+                if v_items:
+                    facets_list.append(
                         DynamicAttributeFacet(
                             attribute_name=attr_name,
                             display_name=disp_name or attr_name,
                             data_type=str(data_type.value if hasattr(data_type, "value") else data_type),
-                            values=val_items,
+                            values=v_items,
                         )
                     )
+            return facets_list
+
+        if is_sqlite:
+            categories = run_categories(self.session)
+            brands = run_brands(self.session)
+            subcategories = run_subcategories(self.session)
+            statuses = run_statuses(self.session)
+            quality_ranges = run_quality_ranges(self.session)
+            dynamic_attribute_facets = run_dynamic_attributes(self.session)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                def exec_with_session(fn):
+                    with Session(bind) as s:
+                        return fn(s)
+
+                f_cats = executor.submit(lambda: exec_with_session(run_categories))
+                f_brands = executor.submit(lambda: exec_with_session(run_brands))
+                f_subcats = executor.submit(lambda: exec_with_session(run_subcategories))
+                f_stats = executor.submit(lambda: exec_with_session(run_statuses))
+                f_qual = executor.submit(lambda: exec_with_session(run_quality_ranges))
+                f_dyn = executor.submit(lambda: exec_with_session(run_dynamic_attributes))
+
+                categories = f_cats.result()
+                brands = f_brands.result()
+                subcategories = f_subcats.result()
+                statuses = f_stats.result()
+                quality_ranges = f_qual.result()
+                dynamic_attribute_facets = f_dyn.result()
 
         return FacetResponsePayload(
             categories=categories,

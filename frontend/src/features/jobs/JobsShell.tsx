@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, FileText, AlertTriangle, Eye, RefreshCw, Loader2, Trash2 } from 'lucide-react';
 import { formatApiDateTime, parseApiDate } from '../../lib/dates';
 import { apiUrl } from '../../lib/api';
@@ -21,45 +22,44 @@ interface DocumentInfo {
 }
 
 export const JobsShell: React.FC = () => {
-  const [documents, setDocuments] = useState<DocumentInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [clearing, setClearing] = useState(false);
+  const [reprocessingId, setReprocessingId] = useState<string | null>(null);
 
   // JSON Inspector Modal state
-  const [loadingParsed, setLoadingParsed] = useState(false);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
-  const [parsedData, setParsedData] = useState<any>(null);
-  const [parsedError, setParsedError] = useState<string | null>(null);
 
-  const fetchDocuments = async () => {
-    try {
-      setLoading(true);
-      setError(null);
+  // 1. Fetch Documents with React Query
+  const {
+    data: documents = [],
+    isLoading: loading,
+    error: queryError,
+    refetch: fetchDocuments,
+    isFetching,
+  } = useQuery<DocumentInfo[]>({
+    queryKey: ['processing-documents'],
+    queryFn: async () => {
       const res = await fetch(apiUrl('/api/v1/documents/'));
       if (!res.ok) throw new Error('Failed to fetch processing logs');
       const data: DocumentInfo[] = await res.json();
-      // Sort by created_at desc
       data.sort((a, b) => (parseApiDate(b.created_at)?.getTime() || 0) - (parseApiDate(a.created_at)?.getTime() || 0));
-      setDocuments(data);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+      return data;
+    },
+    staleTime: 10000,
+  });
 
-  useEffect(() => {
-    fetchDocuments();
-  }, []);
+  const error = queryError instanceof Error ? queryError.message : (queryError ? String(queryError) : null);
 
-  const handleInspectJson = async (docId: string) => {
-    setSelectedDocId(docId);
-    setParsedData(null);
-    setParsedError(null);
-    setLoadingParsed(true);
-    try {
-      const res = await fetch(apiUrl(`/api/v1/documents/${docId}/parsed`));
+  // 2. Fetch Parsed JSON for selected document with React Query
+  const {
+    data: parsedData,
+    isLoading: loadingParsed,
+    error: parsedQueryError,
+  } = useQuery({
+    queryKey: ['parsed-document', selectedDocId],
+    queryFn: async () => {
+      if (!selectedDocId) return null;
+      const res = await fetch(apiUrl(`/api/v1/documents/${selectedDocId}/parsed`));
       if (!res.ok) {
         let errMsg = `Failed to retrieve intermediate representation (HTTP ${res.status})`;
         try {
@@ -68,23 +68,33 @@ export const JobsShell: React.FC = () => {
         } catch {}
         throw new Error(errMsg);
       }
-      const data = await res.json();
-      setParsedData(data);
-    } catch (err: any) {
-      setParsedError(err.message || 'Failed to retrieve intermediate representation');
-    } finally {
-      setLoadingParsed(false);
-    }
+      return res.json();
+    },
+    enabled: !!selectedDocId,
+    staleTime: 60000,
+  });
+
+  const parsedError = parsedQueryError instanceof Error ? parsedQueryError.message : (parsedQueryError ? String(parsedQueryError) : null);
+
+  const handleInspectJson = (docId: string) => {
+    setSelectedDocId(docId);
   };
 
   const handleForceReprocess = async (docId: string) => {
     try {
+      setReprocessingId(docId);
       const res = await fetch(apiUrl(`/api/v1/documents/${docId}/reprocess`), { method: 'POST' });
       if (!res.ok) throw new Error('Reprocess request failed');
-      // Refresh documents list
-      fetchDocuments();
+      queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
+      queryClient.invalidateQueries({ queryKey: ['parsed-document', docId] });
+      queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['products-list'] });
+      queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
+      queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
     } catch (err: any) {
-      setError(err.message);
+      alert(`Error reprocessing: ${err?.message}`);
+    } finally {
+      setReprocessingId(null);
     }
   };
 
@@ -96,10 +106,10 @@ export const JobsShell: React.FC = () => {
       setClearing(true);
       const res = await fetch(apiUrl('/api/v1/documents/clear-all'), { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to clear processing logs');
-      setDocuments([]);
-      setError(null);
+      queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
+      queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
     } catch (err: any) {
-      setError(err.message);
+      alert(`Error clearing logs: ${err?.message}`);
     } finally {
       setClearing(false);
     }
@@ -128,10 +138,10 @@ export const JobsShell: React.FC = () => {
             <span>Clear All</span>
           </button>
           <button 
-            onClick={fetchDocuments}
+            onClick={() => fetchDocuments()}
             className="h-10 px-4 border border-border bg-card text-muted-foreground hover:text-foreground text-xs uppercase tracking-widest font-medium transition rounded-none flex items-center gap-2"
           >
-            <RefreshCw className="w-4 h-4 text-[#9B8F77]" />
+            <RefreshCw className={`w-3.5 h-3.5 text-[#9B8F77] ${isFetching ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
           </button>
         </div>
@@ -209,10 +219,11 @@ export const JobsShell: React.FC = () => {
                     <div className="flex justify-end space-x-2">
                       <button 
                         onClick={() => handleForceReprocess(doc.id)}
+                        disabled={reprocessingId === doc.id}
                         title="Force reprocess"
-                        className="p-1.5 border border-border bg-background hover:bg-card text-muted-foreground hover:text-foreground transition rounded-none"
+                        className="p-1.5 border border-border bg-background hover:bg-card text-muted-foreground hover:text-foreground transition rounded-none disabled:opacity-50"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" />
+                        <RefreshCw className={`w-3.5 h-3.5 ${reprocessingId === doc.id ? 'animate-spin text-[#9B8F77]' : ''}`} />
                       </button>
                       
                       {(doc.status === 'processed' || doc.status === 'completed') && (
