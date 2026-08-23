@@ -111,22 +111,27 @@ export const ProductsShell: React.FC = () => {
   const {
     data: productDetailsData,
     isLoading: loadingDetails,
+    isError: isDetailsError,
+    error: detailsError,
   } = useQuery({
     queryKey: ['product-details', activeProductId],
     queryFn: async () => {
       if (!activeProductId) return null;
-      const res = await fetch(apiUrl(`/api/v1/products/${activeProductId}`));
-      if (!res.ok) throw new Error('Failed to fetch product details');
+      const res = await fetch(apiUrl(`/api/v1/products/${activeProductId}/details`));
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Failed to fetch product details (HTTP ${res.status})`);
+      }
       return res.json();
     },
     enabled: !!activeProductId,
     staleTime: 30000,
   });
 
-  const selectedProduct: ProductItem | null = productDetailsData?.product || null;
+  const selectedProduct: ProductItem | null = productDetailsData?.product || (productDetailsData?.id ? productDetailsData : null);
   const attributes: ProductAttributeItem[] = productDetailsData?.attributes || [];
   const evidenceList: EvidenceItem[] = productDetailsData?.evidence || [];
-  const validationIssues: any[] = productDetailsData?.validation_issues || [];
+  const validationIssues: any[] = productDetailsData?.validation?.issues || productDetailsData?.validation_issues || [];
   const validationSummary: any = productDetailsData?.validation || null;
   const enrichmentData: any = productDetailsData?.enrichment || null;
 
@@ -295,7 +300,41 @@ export const ProductsShell: React.FC = () => {
     (e) => !selectedAttrId || e.attribute_id === selectedAttrId
   );
 
-  if (activeProductId ? loadingDetails : loading) {
+  if (activeProductId && loadingDetails) {
+    return (
+      <div className="space-y-6 animate-pulse text-foreground">
+        <div className="flex items-center justify-between">
+          <div className="h-8 w-64 bg-card border border-border"></div>
+          <div className="h-8 w-32 bg-card border border-border"></div>
+        </div>
+        <div className="h-48 border border-border bg-card"></div>
+        <div className="h-96 border border-border bg-card"></div>
+      </div>
+    );
+  }
+
+  if (activeProductId && isDetailsError) {
+    return (
+      <div className="space-y-6 text-foreground">
+        <div className="p-8 border border-destructive/30 bg-destructive/5 text-center space-y-4 rounded-none">
+          <AlertTriangle className="w-12 h-12 text-destructive mx-auto" />
+          <h3 className="font-serif text-xl font-normal text-foreground">Product Details Unavailable</h3>
+          <p className="text-xs uppercase tracking-wider text-muted-foreground font-light">
+            {(detailsError as Error)?.message || 'The requested product could not be loaded or was removed.'}
+          </p>
+          <button
+            onClick={clearSelection}
+            className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back to Product Catalog</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!activeProductId && loading) {
     return (
       <div className="space-y-6 animate-pulse text-foreground">
         <div className="h-8 w-64 bg-card border border-border"></div>

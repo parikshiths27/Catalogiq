@@ -384,3 +384,95 @@ def test_get_product_endpoint_attributes_dictionary(session: Session):
     finally:
         app.dependency_overrides.clear()
 
+
+def test_get_product_complete_details_envelope_and_contract(session: Session):
+    """
+    Verifies that GET /api/v1/products/{product_id}/details returns the complete
+    consolidated envelope required by the Product Details frontend view:
+    - product base dict
+    - attributes list
+    - evidence list
+    - validation summary
+    - enrichment envelope
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db.session import get_session
+
+    def override_get_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        client = TestClient(app)
+
+        product = Product(
+            sku="NORTON-45",
+            brand="Norton",
+            product_name="4-1/2 in Flap Disc",
+            category="Abrasives & Polishers>Flap Discs & Flap Wheels",
+            quality_score=95.0,
+            status="verified"
+        )
+        session.add(product)
+        session.commit()
+
+        attr = ProductAttribute(
+            product_id=product.id,
+            attribute_name="wheel_diameter",
+            display_name="Wheel Diameter",
+            raw_value="4-1/2 in",
+            normalized_value=4.5,
+            unit="in",
+            data_type=AttributeDataType.numeric,
+            confidence=0.98,
+            status=AttributeStatus.verified,
+            source_type="document"
+        )
+        session.add(attr)
+        session.commit()
+
+        evid = AttributeEvidence(
+            attribute_id=attr.id,
+            product_id=product.id,
+            evidence_text="4-1/2 in flap disc",
+            page_number=1,
+            extraction_method="table_parser"
+        )
+        session.add(evid)
+        session.commit()
+
+        # 1. Test GET /api/v1/products/{product_id}/details
+        res = client.get(f"/api/v1/products/{product.id}/details")
+        assert res.status_code == 200
+        data = res.json()
+
+        assert "product" in data
+        assert data["product"]["id"] == str(product.id)
+        assert data["product"]["sku"] == "NORTON-45"
+        assert data["product"]["brand"] == "Norton"
+        assert "attributes" in data["product"]
+
+        assert "attributes" in data
+        assert isinstance(data["attributes"], list)
+        assert len(data["attributes"]) == 1
+        assert data["attributes"][0]["attribute_name"] == "wheel_diameter"
+
+        assert "evidence" in data
+        assert isinstance(data["evidence"], list)
+        assert len(data["evidence"]) == 1
+        assert data["evidence"][0]["evidence_text"] == "4-1/2 in flap disc"
+
+        assert "validation" in data
+        assert "quality_score" in data["validation"]
+
+        assert "enrichment" in data
+
+        # 2. Test 404 on non-existent product ID
+        missing_id = uuid.uuid4()
+        res_404 = client.get(f"/api/v1/products/{missing_id}/details")
+        assert res_404.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
