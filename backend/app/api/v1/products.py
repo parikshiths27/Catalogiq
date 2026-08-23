@@ -121,37 +121,91 @@ def list_products(
 def clear_all_products(session: Session = Depends(get_session)):
     """
     Clears all products and their associated attributes, evidence, enrichment results,
-    and validation issues from the database for a clean slate.
+    validation issues, versions, candidates, audit logs, processing jobs/steps,
+    batches, documents, sources, and cache entries from the database for a clean slate.
     """
     from sqlmodel import select as sel
     from app.models import (
         Product, ProductAttribute, AttributeEvidence, ValidationResult,
-        EnrichmentResult, DuplicateCandidate, ProductVersion, ProductDocumentAssociation
+        EnrichmentResult, DuplicateCandidate, ProductVersion, ProductDocumentAssociation,
+        EmbeddingMetadata, AuditLog, CacheEntry, ProcessingStep, ProcessingJob,
+        IngestionBatchItem, IngestionBatch, Source, Document
     )
 
-    # Clean associations & child tables
-    session.exec(sel(AttributeEvidence)).all()
+    # 1. AttributeEvidence
+    ev_count = len(session.exec(sel(AttributeEvidence)).all())
     for ev in session.exec(sel(AttributeEvidence)).all():
         session.delete(ev)
 
+    # 2. ProductAttribute
+    attr_count = len(session.exec(sel(ProductAttribute)).all())
     for attr in session.exec(sel(ProductAttribute)).all():
         session.delete(attr)
 
+    # 3. ValidationResult
+    val_count = len(session.exec(sel(ValidationResult)).all())
     for val in session.exec(sel(ValidationResult)).all():
         session.delete(val)
 
+    # 4. EnrichmentResult
+    enr_count = len(session.exec(sel(EnrichmentResult)).all())
     for enr in session.exec(sel(EnrichmentResult)).all():
         session.delete(enr)
 
+    # 5. DuplicateCandidate
     for dc in session.exec(sel(DuplicateCandidate)).all():
         session.delete(dc)
 
+    # 6. ProductVersion
     for pv in session.exec(sel(ProductVersion)).all():
         session.delete(pv)
 
+    # 7. ProductDocumentAssociation
     for pda in session.exec(sel(ProductDocumentAssociation)).all():
         session.delete(pda)
 
+    # 8. EmbeddingMetadata
+    for em in session.exec(sel(EmbeddingMetadata)).all():
+        session.delete(em)
+
+    # 9. AuditLog
+    audit_count = len(session.exec(sel(AuditLog)).all())
+    for al in session.exec(sel(AuditLog)).all():
+        session.delete(al)
+
+    # 10. CacheEntry
+    for ce in session.exec(sel(CacheEntry)).all():
+        session.delete(ce)
+
+    # 11. ProcessingStep
+    for s in session.exec(sel(ProcessingStep)).all():
+        session.delete(s)
+
+    # 12. ProcessingJob
+    job_count = len(session.exec(sel(ProcessingJob)).all())
+    for j in session.exec(sel(ProcessingJob)).all():
+        session.delete(j)
+
+    # 13. IngestionBatchItem
+    for bi in session.exec(sel(IngestionBatchItem)).all():
+        session.delete(bi)
+
+    # 14. IngestionBatch
+    batch_count = len(session.exec(sel(IngestionBatch)).all())
+    for b in session.exec(sel(IngestionBatch)).all():
+        session.delete(b)
+
+    # 15. Source
+    src_count = len(session.exec(sel(Source)).all())
+    for s in session.exec(sel(Source)).all():
+        session.delete(s)
+
+    # 16. Document
+    doc_count = len(session.exec(sel(Document)).all())
+    for d in session.exec(sel(Document)).all():
+        session.delete(d)
+
+    # 17. Product
     prods = session.exec(sel(Product)).all()
     prod_count = len(prods)
     for p in prods:
@@ -160,9 +214,17 @@ def clear_all_products(session: Session = Depends(get_session)):
     session.commit()
 
     return {
+        "success": True,
         "status": "cleared",
-        "products_removed": prod_count,
-        "message": f"Successfully cleared {prod_count} products and all associated attributes, evidence, and validations."
+        "products_deleted": prod_count,
+        "documents_deleted": doc_count,
+        "reviews_deleted": val_count,
+        "evidence_deleted": ev_count,
+        "jobs_deleted": job_count,
+        "batches_deleted": batch_count,
+        "sources_deleted": src_count,
+        "audit_logs_deleted": audit_count,
+        "message": f"Successfully reset catalog and cleared {prod_count} products, {doc_count} documents, and all associated records."
     }
 
 
@@ -285,12 +347,12 @@ def export_products(
             row["LONG_DESC1"] = enrich_data.get("long_desc") or prod.commerce_description or prod.description or prod.product_name
             row["RETAIL_DESC"] = enrich_data.get("retail_desc") or prod.description or ""
             row["Product Name"] = prod.product_name
-            row["Selling Qty"] = "1"
-            row["Selling UOM"] = "EA"
-            row["Product Image"] = f"{clean_brand_name}_{sku_val}.jpg" if sku_val else ""
-            row["Specification Sheet"] = f"{clean_brand_name}_{sku_val}_Specification_Sheet.pdf" if sku_val else ""
-            row["Discontinued"] = "No"
-            row["Actual Image (Yes/No)"] = "Yes" if sku_val else "No"
+            row["Selling Qty"] = str(enrich_data.get("selling_qty") or prod.attributes.get("Selling Qty", "1") or "1")
+            row["Selling UOM"] = str(enrich_data.get("selling_uom") or prod.attributes.get("Selling UOM", "EA") or "EA")
+            row["Product Image"] = str(enrich_data.get("product_image") or prod.attributes.get("Product Image", "") or "")
+            row["Specification Sheet"] = str(enrich_data.get("spec_sheet") or prod.attributes.get("Specification Sheet", "") or "")
+            row["Discontinued"] = str(enrich_data.get("discontinued") or prod.attributes.get("Discontinued", "No") or "No")
+            row["Actual Image (Yes/No)"] = "Yes" if row["Product Image"] else "No"
 
             # Populate features 1..20
             if prod.features:

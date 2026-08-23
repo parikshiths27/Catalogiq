@@ -250,8 +250,25 @@ export const HealthShell: React.FC = () => {
         </div>
       </div>
 
-      {/* Top 6 KPI Cards with Clear Explanations */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+      {overall.total_products === 0 ? (
+        <div className="p-12 border border-border bg-card text-center space-y-4 rounded-none">
+          <HeartPulse className="w-12 h-12 text-muted-foreground opacity-50 mx-auto" />
+          <h3 className="font-serif text-xl font-normal text-foreground">No Catalog Health Data</h3>
+          <p className="text-xs uppercase tracking-wider text-muted-foreground font-light max-w-md mx-auto">
+            Ingest and enrich catalog documentation to view automated quality scores, completeness breakdowns, and category health analytics.
+          </p>
+          <Link
+            to="/upload"
+            className="h-10 px-6 bg-foreground text-background border border-foreground hover:bg-transparent hover:text-foreground text-[10px] uppercase tracking-widest font-semibold transition duration-150 rounded-none inline-flex items-center gap-2"
+          >
+            <UploadCloud className="w-3.5 h-3.5" />
+            <span>Upload Catalog Documents</span>
+          </Link>
+        </div>
+      ) : (
+        <>
+          {/* Top 6 KPI Cards with Clear Explanations */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
         {/* 1. Catalog Quality */}
         <div className="p-5 border border-border bg-card rounded-none space-y-2 relative group">
           <div className="flex items-center justify-between text-muted-foreground">
@@ -723,6 +740,8 @@ export const HealthShell: React.FC = () => {
             ))}
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

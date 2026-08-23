@@ -13,6 +13,11 @@ from app.services.parser import (
 from app.core.constants import SUPPORTED_DOCUMENT_EXTENSIONS
 
 
+@pytest.fixture(autouse=True)
+def mock_parser_env(monkeypatch):
+    monkeypatch.setenv("TEST_MOCK_PARSER", "true")
+
+
 def test_supported_document_extensions_registry():
     """Verifies that all 9 target formats are registered in the authoritative constants."""
     target_extensions = {".pdf", ".docx", ".xlsx", ".csv", ".txt", ".json", ".xml", ".html", ".htm", ".md"}
@@ -58,8 +63,8 @@ def test_pdf_upload_and_parsing(session: Session, monkeypatch):
     monkeypatch.setenv("TEST_MOCK_PARSER", "true")
     service = DocumentService(session)
     pdf_bytes = b"%PDF-1.4 sample content"
-    res = service.upload_document(pdf_bytes, "motor_spec.pdf", "application/pdf")
-    assert res["status"] in ("queued", "already_processed")
+    res = service.upload_document(pdf_bytes, "motor_spec.pdf", "application/pdf", process_inline=False)
+    assert res["status"] == "queued"
 
     parser = MultiFormatParser()
     ir = parser.parse(pdf_bytes, filename="motor_spec.pdf")
@@ -73,7 +78,7 @@ def test_docx_upload_and_parsing(session: Session, monkeypatch):
     monkeypatch.setenv("TEST_MOCK_PARSER", "true")
     service = DocumentService(session)
     docx_bytes = b"PK\x03\x04sample docx zip bytes"
-    res = service.upload_document(docx_bytes, "manual.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    res = service.upload_document(docx_bytes, "manual.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", process_inline=False)
     assert res["status"] == "queued"
 
     doc = session.get(Document, res["document_id"])
@@ -91,7 +96,7 @@ def test_xlsx_upload_and_parsing(session: Session, monkeypatch):
     monkeypatch.setenv("TEST_MOCK_PARSER", "true")
     service = DocumentService(session)
     xlsx_bytes = b"PK\x03\x04sample xlsx zip bytes"
-    res = service.upload_document(xlsx_bytes, "catalog.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    res = service.upload_document(xlsx_bytes, "catalog.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", process_inline=False)
     assert res["status"] == "queued"
 
     doc = session.get(Document, res["document_id"])
@@ -107,7 +112,7 @@ def test_csv_upload_and_parsing(session: Session):
     """Verifies CSV upload and parsing to common IR."""
     service = DocumentService(session)
     csv_bytes = b"SKU,Name,Voltage,Power\nCSV-100,CSV Motor,230V,5.5kW\n"
-    res = service.upload_document(csv_bytes, "products.csv", "text/csv")
+    res = service.upload_document(csv_bytes, "products.csv", "text/csv", process_inline=False)
     assert res["status"] == "queued"
 
     doc = session.get(Document, res["document_id"])
@@ -125,7 +130,7 @@ def test_txt_upload_and_parsing(session: Session):
     """Verifies TXT upload and parsing to common IR."""
     service = DocumentService(session)
     txt_bytes = b"Industrial Motor Technical Datasheet\nModel: TXT-100\nSKU: TXT-100-SKU\nVoltage: 400V\n"
-    res = service.upload_document(txt_bytes, "datasheet.txt", "text/plain")
+    res = service.upload_document(txt_bytes, "datasheet.txt", "text/plain", process_inline=False)
     assert res["status"] == "queued"
 
     parser = TextParser()
@@ -141,7 +146,7 @@ def test_json_upload_and_parsing(session: Session):
         {"sku": "JSON-100", "name": "Pump Motor", "voltage": "230V", "power": "4.0kW"}
     ]).encode("utf-8")
 
-    res = service.upload_document(json_bytes, "catalog.json", "application/json")
+    res = service.upload_document(json_bytes, "catalog.json", "application/json", process_inline=False)
     assert res["status"] == "queued"
 
     parser = JSONParser()
@@ -161,7 +166,7 @@ def test_xml_upload_and_parsing(session: Session):
         </product>
     </catalog>"""
 
-    res = service.upload_document(xml_bytes, "feed.xml", "application/xml")
+    res = service.upload_document(xml_bytes, "feed.xml", "application/xml", process_inline=False)
     assert res["status"] == "queued"
 
     parser = XMLParser()
@@ -186,7 +191,7 @@ def test_html_upload_and_parsing(session: Session):
     </body>
     </html>"""
 
-    res = service.upload_document(html_bytes, "spec.html", "text/html")
+    res = service.upload_document(html_bytes, "spec.html", "text/html", process_inline=False)
     assert res["status"] == "queued"
 
     parser = HTMLParser()
@@ -200,7 +205,7 @@ def test_markdown_upload_and_parsing(session: Session):
     """Verifies Markdown upload and parsing to common IR."""
     service = DocumentService(session)
     md_bytes = b"# Motor Spec Sheet\n\n- **SKU**: MD-500\n- **Power**: 11 kW\n- **Voltage**: 400 V\n"
-    res = service.upload_document(md_bytes, "spec.md", "text/markdown")
+    res = service.upload_document(md_bytes, "spec.md", "text/markdown", process_inline=False)
     assert res["status"] == "queued"
 
     parser = TextParser()

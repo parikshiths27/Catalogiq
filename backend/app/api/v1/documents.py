@@ -144,39 +144,71 @@ def list_documents(
 @router.delete("/clear-all")
 def clear_all_documents(session: Session = Depends(get_session)):
     """
-    Clears all documents and their associated processing jobs/steps from the database.
-    Does NOT delete the products that were created from those documents.
+    Clears all documents and their associated processing jobs, steps, batches, and cache records from the database.
+    Preserves products while nullifying document references in evidence and sources.
     """
     from sqlmodel import select as sel
-    from app.models import ProcessingStep, ProcessingJob, IngestionBatch
+    from app.models import (
+        ProcessingStep, ProcessingJob, IngestionBatch, IngestionBatchItem,
+        ProductDocumentAssociation, AttributeEvidence, Source, Document, CacheEntry, CacheType
+    )
 
-    # Delete processing steps first (FK dependency)
-    steps = session.exec(sel(ProcessingStep)).all()
-    for s in steps:
+    # 1. Processing steps
+    step_count = len(session.exec(sel(ProcessingStep)).all())
+    for s in session.exec(sel(ProcessingStep)).all():
         session.delete(s)
 
-    # Delete processing jobs
-    jobs = session.exec(sel(ProcessingJob)).all()
-    for j in jobs:
+    # 2. Processing jobs
+    job_count = len(session.exec(sel(ProcessingJob)).all())
+    for j in session.exec(sel(ProcessingJob)).all():
         session.delete(j)
 
-    # Delete documents
+    # 3. Batch items
+    for bi in session.exec(sel(IngestionBatchItem)).all():
+        session.delete(bi)
+
+    # 4. Ingestion batches
+    batch_count = len(session.exec(sel(IngestionBatch)).all())
+    for b in session.exec(sel(IngestionBatch)).all():
+        session.delete(b)
+
+    # 5. Product document associations
+    for pda in session.exec(sel(ProductDocumentAssociation)).all():
+        session.delete(pda)
+
+    # 6. Nullify FK in AttributeEvidence
+    for ev in session.exec(sel(AttributeEvidence)).all():
+        if ev.document_id is not None:
+            ev.document_id = None
+            session.add(ev)
+
+    # 7. Nullify FK in Source
+    for src in session.exec(sel(Source)).all():
+        if src.document_id is not None:
+            src.document_id = None
+            session.add(src)
+
+    # 8. Document caches
+    for ce in session.exec(sel(CacheEntry)).all():
+        if ce.cache_type == CacheType.document:
+            session.delete(ce)
+
+    # 9. Documents
     docs = session.exec(sel(Document)).all()
     doc_count = len(docs)
     for d in docs:
         session.delete(d)
 
-    # Delete ingestion batches
-    batches = session.exec(sel(IngestionBatch)).all()
-    for b in batches:
-        session.delete(b)
-
     session.commit()
 
     return {
+        "success": True,
         "status": "cleared",
-        "documents_removed": doc_count,
-        "message": f"Successfully cleared {doc_count} documents and all associated processing records.",
+        "documents_deleted": doc_count,
+        "jobs_deleted": job_count,
+        "steps_deleted": step_count,
+        "batches_deleted": batch_count,
+        "message": f"Successfully cleared {doc_count} documents, {job_count} jobs, and all associated processing history.",
     }
 
 @router.get("/{document_id}", response_model=Document)

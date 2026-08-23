@@ -298,6 +298,14 @@ export const UploadShell: React.FC = () => {
     if (resetCatalogFirst) {
       try {
         await fetch(apiUrl('/api/v1/products/clear-all'), { method: 'DELETE' });
+        queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+        queryClient.invalidateQueries({ queryKey: ['products-list'] });
+        queryClient.invalidateQueries({ queryKey: ['product-details'] });
+        queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
+        queryClient.invalidateQueries({ queryKey: ['parsed-document'] });
+        queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
+        queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
+        queryClient.invalidateQueries({ queryKey: ['search'] });
       } catch (e) {
         console.warn("Failed to reset catalog before upload:", e);
       }

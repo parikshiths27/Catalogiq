@@ -107,7 +107,11 @@ export const JobsShell: React.FC = () => {
       const res = await fetch(apiUrl('/api/v1/documents/clear-all'), { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to clear processing logs');
       queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
+      queryClient.invalidateQueries({ queryKey: ['parsed-document'] });
       queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
+      queryClient.invalidateQueries({ queryKey: ['products-list'] });
+      setSelectedDocId(null);
     } catch (err: any) {
       alert(`Error clearing logs: ${err?.message}`);
     } finally {

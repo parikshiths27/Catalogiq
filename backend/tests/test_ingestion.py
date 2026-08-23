@@ -233,19 +233,20 @@ def test_worker_idempotency(session: Session):
                 assert doc.status == DocumentStatus.processed
 
 # 7. Concurrent Duplicate Uploads
-def test_concurrent_duplicate_uploads(session: Session):
+def test_concurrent_duplicate_uploads(session: Session, monkeypatch):
+    monkeypatch.setenv("TEST_MOCK_PARSER", "true")
     service = DocumentService(session)
     
     # Mock upload validation pass
     pdf_bytes = b"%PDF-1.4 file contents"
     
     # Trigger 1st upload
-    res1 = service.upload_document(pdf_bytes, "test.pdf", "application/pdf")
+    res1 = service.upload_document(pdf_bytes, "test.pdf", "application/pdf", process_inline=False)
     
     # Simulate concurrency: 2nd upload hits commit at same time but catches IntegrityError
     # We mock commit to raise IntegrityError for test verification
-    with patch.object(session, "commit", side_effect=IntegrityError("UniqueConstraint", None, None)):
-        res2 = service.upload_document(pdf_bytes, "test.pdf", "application/pdf")
+    with patch.object(session, "commit", side_effect=IntegrityError("statement", {}, Exception("UniqueConstraint"))):
+        res2 = service.upload_document(pdf_bytes, "test.pdf", "application/pdf", process_inline=False)
         
         # Verify 2nd concurrent upload gracefully falls back to the winner document details
         assert res1["document_id"] == res2["document_id"]

@@ -20,7 +20,7 @@ class QdrantService:
     Abstraction layer over QdrantClient for CatalogIQ vector indexing and semantic retrieval.
     """
 
-    def __init__(self, url: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 1.0):
+    def __init__(self, url: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 10.0):
         self.url = url or settings.QDRANT_URL
         self.api_key = api_key or settings.QDRANT_API_KEY
         self.timeout = timeout
@@ -68,23 +68,44 @@ class QdrantService:
         Returns:
             True if collection is ready.
         """
+        import time
         target_collection = collection_name or settings.QDRANT_COLLECTION_NAME
-        try:
-            collections_res = self.client.get_collections()
-            existing_names = [c.name for c in collections_res.collections]
+        last_err = None
+        for attempt in range(2):
+            try:
+                collections_res = self.client.get_collections()
+                existing_names = [c.name for c in collections_res.collections]
 
-            if target_collection not in existing_names:
-                logger.info(
-                    f"Creating Qdrant collection '{target_collection}' with vector_size={vector_size}, distance={distance}"
-                )
-                self.client.create_collection(
-                    collection_name=target_collection,
-                    vectors_config=VectorParams(size=vector_size, distance=distance),
-                )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to ensure Qdrant collection '{target_collection}': {e}")
-            raise
+                if target_collection not in existing_names:
+                    logger.info(
+                        f"Creating Qdrant collection '{target_collection}' with vector_size={vector_size}, distance={distance}"
+                    )
+                    self.client.create_collection(
+                        collection_name=target_collection,
+                        vectors_config=VectorParams(size=vector_size, distance=distance),
+                    )
+                    # Create payload indexes so filtering on category, manufacturer, status, quality_score works out-of-the-box
+                    try:
+                        for field in ["category", "manufacturer", "status"]:
+                            self.client.create_payload_index(
+                                collection_name=target_collection,
+                                field_name=field,
+                                field_schema=rest_models.PayloadSchemaType.KEYWORD,
+                            )
+                        self.client.create_payload_index(
+                            collection_name=target_collection,
+                            field_name="quality_score",
+                            field_schema=rest_models.PayloadSchemaType.FLOAT,
+                        )
+                    except Exception as e:
+                        logger.debug(f"Payload index creation note: {e}")
+                return True
+            except Exception as e:
+                last_err = e
+                time.sleep(0.3)
+
+        logger.error(f"Failed to ensure Qdrant collection '{target_collection}': {last_err}")
+        raise last_err
 
     def upsert_product_vector(
         self,
@@ -105,18 +126,24 @@ class QdrantService:
         Returns:
             True on success.
         """
+        import time
         target_collection = collection_name or settings.QDRANT_COLLECTION_NAME
         self.ensure_collection_exists(target_collection, vector_size=len(vector))
 
         point = PointStruct(id=point_id, vector=vector, payload=payload)
 
-        try:
-            self.client.upsert(collection_name=target_collection, points=[point])
-            logger.info(f"Successfully upserted point {point_id} to collection '{target_collection}'")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to upsert point {point_id} to Qdrant collection '{target_collection}': {e}")
-            raise
+        last_err = None
+        for attempt in range(2):
+            try:
+                self.client.upsert(collection_name=target_collection, points=[point])
+                logger.info(f"Successfully upserted point {point_id} to collection '{target_collection}'")
+                return True
+            except Exception as e:
+                last_err = e
+                time.sleep(0.3)
+
+        logger.error(f"Failed to upsert point {point_id} to Qdrant collection '{target_collection}': {last_err}")
+        raise last_err
 
     def search_vectors(
         self,
@@ -137,39 +164,49 @@ class QdrantService:
         Returns:
             List of dict objects with keys 'id', 'score', 'payload'.
         """
-        import httpx
-
         target_collection = collection_name or settings.QDRANT_COLLECTION_NAME
         self.ensure_collection_exists(target_collection, vector_size=len(query_vector))
 
-        payload_filter = self._build_rest_filter(filters)
-        request_body = {
-            "vector": query_vector,
-            "limit": limit,
-            "with_payload": True,
-        }
-        if payload_filter:
-            request_body["filter"] = payload_filter
-
-        endpoint = f"{self.url.rstrip('/')}/collections/{target_collection}/points/search"
-        headers = {"api-key": self.api_key} if self.api_key else {}
+        query_filter = self._build_filter(filters)
 
         try:
-            with httpx.Client(timeout=self.timeout, headers=headers) as http_client:
-                resp = http_client.post(endpoint, json=request_body)
-                resp.raise_for_status()
-                data = resp.json()
+            if hasattr(self.client, "query_points"):
+                res_obj = self.client.query_points(
+                    collection_name=target_collection,
+                    query=query_vector,
+                    query_filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
+                results = res_obj.points if hasattr(res_obj, "points") else res_obj
+            elif hasattr(self.client, "search"):
+                results = self.client.search(
+                    collection_name=target_collection,
+                    query_vector=query_vector,
+                    query_filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
+            else:
+                res_obj = self.client.search_points(
+                    collection_name=target_collection,
+                    vector=query_vector,
+                    filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
+                results = res_obj.result if hasattr(res_obj, "result") else res_obj
 
-                hits = []
-                for item in data.get("result", []):
-                    hits.append(
-                        {
-                            "id": str(item["id"]),
-                            "score": float(item["score"]),
-                            "payload": item.get("payload") or {},
-                        }
-                    )
-                return hits
+            hits = []
+            for item in results:
+                hits.append(
+                    {
+                        "id": str(item.id),
+                        "score": float(item.score),
+                        "payload": item.payload or {},
+                    }
+                )
+            return hits
         except Exception as e:
             logger.error(f"Qdrant search error in collection '{target_collection}': {e}")
             raise
@@ -197,8 +234,8 @@ class QdrantService:
         except Exception:
             return 0
 
-    def _build_rest_filter(self, filters: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Constructs Qdrant REST payload filter dictionary supporting lists and range bounds."""
+    def _build_filter(self, filters: Optional[Dict[str, Any]]) -> Optional[Filter]:
+        """Constructs Qdrant Filter model supporting lists and range bounds."""
         if not filters:
             return None
 
@@ -209,44 +246,44 @@ class QdrantService:
         if cat_val:
             if isinstance(cat_val, list):
                 if len(cat_val) == 1:
-                    must_conditions.append({"key": "category", "match": {"value": str(cat_val[0])}})
+                    must_conditions.append(FieldCondition(key="category", match=MatchValue(value=str(cat_val[0]))))
                 elif len(cat_val) > 1:
-                    must_conditions.append({"key": "category", "match": {"any": [str(c) for c in cat_val]}})
+                    must_conditions.append(FieldCondition(key="category", match=rest_models.MatchAny(any=[str(c) for c in cat_val])))
             else:
-                must_conditions.append({"key": "category", "match": {"value": str(cat_val)}})
+                must_conditions.append(FieldCondition(key="category", match=MatchValue(value=str(cat_val))))
 
         # Brand / Manufacturer
         brand_val = filters.get("brand") or filters.get("manufacturer")
         if brand_val:
             if isinstance(brand_val, list):
                 if len(brand_val) == 1:
-                    must_conditions.append({"key": "manufacturer", "match": {"value": str(brand_val[0])}})
+                    must_conditions.append(FieldCondition(key="manufacturer", match=MatchValue(value=str(brand_val[0]))))
                 elif len(brand_val) > 1:
-                    must_conditions.append({"key": "manufacturer", "match": {"any": [str(b) for b in brand_val]}})
+                    must_conditions.append(FieldCondition(key="manufacturer", match=rest_models.MatchAny(any=[str(b) for b in brand_val])))
             else:
-                must_conditions.append({"key": "manufacturer", "match": {"value": str(brand_val)}})
+                must_conditions.append(FieldCondition(key="manufacturer", match=MatchValue(value=str(brand_val))))
 
         # Status
         status_val = filters.get("status")
         if status_val:
             if isinstance(status_val, list):
                 if len(status_val) == 1:
-                    must_conditions.append({"key": "status", "match": {"value": str(status_val[0])}})
+                    must_conditions.append(FieldCondition(key="status", match=MatchValue(value=str(status_val[0]))))
                 elif len(status_val) > 1:
-                    must_conditions.append({"key": "status", "match": {"any": [str(s) for s in status_val]}})
+                    must_conditions.append(FieldCondition(key="status", match=rest_models.MatchAny(any=[str(s) for s in status_val])))
             else:
-                must_conditions.append({"key": "status", "match": {"value": str(status_val)}})
+                must_conditions.append(FieldCondition(key="status", match=MatchValue(value=str(status_val))))
 
         # Quality score range
-        range_cond = {}
+        range_kwargs = {}
         if filters.get("min_quality_score") is not None:
-            range_cond["gte"] = float(filters["min_quality_score"])
+            range_kwargs["gte"] = float(filters["min_quality_score"])
         if filters.get("max_quality_score") is not None:
-            range_cond["lte"] = float(filters["max_quality_score"])
-        if range_cond:
-            must_conditions.append({"key": "quality_score", "range": range_cond})
+            range_kwargs["lte"] = float(filters["max_quality_score"])
+        if range_kwargs:
+            must_conditions.append(FieldCondition(key="quality_score", range=Range(**range_kwargs)))
 
         if not must_conditions:
             return None
 
-        return {"must": must_conditions}
+        return Filter(must=must_conditions)

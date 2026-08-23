@@ -89,7 +89,7 @@ def test_gemini_extract_resilience_to_markdown_codeblock():
         assert result.brand == "Schneider"
 
 
-def test_tabular_catalog_spreadsheet_ingestion():
+def test_tabular_catalog_spreadsheet_ingestion(session: Session):
     """
     Test that ExtractionStage detects a multi-row Excel/CSV catalog spreadsheet,
     processes rows through EnrichmentPipeline, and persists all products with 5-channel descriptions.
@@ -117,35 +117,34 @@ def test_tabular_catalog_spreadsheet_ingestion():
         ]
     }
 
-    with Session(engine) as session:
-        doc = Document(
-            id=doc_id,
-            filename="catalog_upload.xlsx",
-            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            storage_key="test/catalog_upload.xlsx",
-            parsed_storage_key="test/catalog_upload_parsed.json",
-            file_hash="test-hash-catalog",
-            content_hash="test-hash-catalog",
-            file_size=1024,
-            status=DocumentStatus.parsing,
-        )
-        job = ProcessingJob(
-            id=job_id,
-            document_id=doc_id,
-            status=JobStatus.processing,
-            current_stage=ProcessingStage.extracting,
-        )
-        step = ProcessingStep(
-            id=step_id,
-            job_id=job_id,
-            document_id=doc_id,
-            stage=ProcessingStage.extracting,
-            status=StepStatus.queued,
-        )
-        session.add(doc)
-        session.add(job)
-        session.add(step)
-        session.commit()
+    doc = Document(
+        id=doc_id,
+        filename="catalog_upload.xlsx",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        storage_key="test/catalog_upload.xlsx",
+        parsed_storage_key="test/catalog_upload_parsed.json",
+        file_hash="test-hash-catalog",
+        content_hash="test-hash-catalog",
+        file_size=1024,
+        status=DocumentStatus.parsing,
+    )
+    job = ProcessingJob(
+        id=job_id,
+        document_id=doc_id,
+        status=JobStatus.processing,
+        current_stage=ProcessingStage.extracting,
+    )
+    step = ProcessingStep(
+        id=step_id,
+        job_id=job_id,
+        document_id=doc_id,
+        stage=ProcessingStage.extracting,
+        status=StepStatus.queued,
+    )
+    session.add(doc)
+    session.add(job)
+    session.add(step)
+    session.commit()
 
     with patch("app.services.pipeline.get_storage_service") as mock_storage_factory:
         mock_storage = MagicMock()
@@ -153,48 +152,24 @@ def test_tabular_catalog_spreadsheet_ingestion():
         mock_storage_factory.return_value = mock_storage
 
         stage = ExtractionStage(llm_provider=MagicMock())
-        with Session(engine) as session:
-            stage.execute(session, doc_id, job_id, step_id)
+        stage.execute(session, doc_id, job_id, step_id)
 
     # Verify both products were created in the database and linked to the document
-    with Session(engine) as session:
-        assocs = session.exec(select(ProductDocumentAssociation).where(ProductDocumentAssociation.document_id == doc_id)).all()
-        assert len(assocs) == 2, f"Expected 2 product associations, got {len(assocs)}"
+    assocs = session.exec(select(ProductDocumentAssociation).where(ProductDocumentAssociation.document_id == doc_id)).all()
+    assert len(assocs) == 2, f"Expected 2 product associations, got {len(assocs)}"
 
-        p1 = session.get(Product, assocs[0].product_id)
-        p2 = session.get(Product, assocs[1].product_id)
+    p1 = session.get(Product, assocs[0].product_id)
+    p2 = session.get(Product, assocs[1].product_id)
 
-        skus = {p1.sku, p2.sku}
-        assert "PDSH4816AF" in skus or "3/8 CPLG BRS" in skus
+    skus = {p1.sku, p2.sku}
+    assert "PDSH4816AF" in skus or "3/8 CPLG BRS" in skus
 
-        # Check enrichment result exists for p1
-        enrich1 = session.exec(select(EnrichmentResult).where(EnrichmentResult.product_id == p1.id)).first()
-        assert enrich1 is not None
-        assert enrich1.generated_value is not None
-        enrich_data = json.loads(enrich1.generated_value)
-        assert "invoice_desc" in enrich_data
-        assert "mobile_desc" in enrich_data
-        assert "short_desc" in enrich_data
-        assert "long_desc" in enrich_data
-
-        # Clean up test rows
-        for assoc in assocs:
-            prod = session.get(Product, assoc.product_id)
-            if prod:
-                for attr in session.exec(select(ProductAttribute).where(ProductAttribute.product_id == prod.id)).all():
-                    session.delete(attr)
-                for en in session.exec(select(EnrichmentResult).where(EnrichmentResult.product_id == prod.id)).all():
-                    session.delete(en)
-                session.delete(prod)
-            session.delete(assoc)
-
-        step_db = session.get(ProcessingStep, step_id)
-        if step_db:
-            session.delete(step_db)
-        job_db = session.get(ProcessingJob, job_id)
-        if job_db:
-            session.delete(job_db)
-        doc_db = session.get(Document, doc_id)
-        if doc_db:
-            session.delete(doc_db)
-        session.commit()
+    # Check enrichment result exists for p1
+    enrich1 = session.exec(select(EnrichmentResult).where(EnrichmentResult.product_id == p1.id)).first()
+    assert enrich1 is not None
+    assert enrich1.generated_value is not None
+    enrich_data = json.loads(enrich1.generated_value)
+    assert "invoice_desc" in enrich_data
+    assert "mobile_desc" in enrich_data
+    assert "short_desc" in enrich_data
+    assert "long_desc" in enrich_data

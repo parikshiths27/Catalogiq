@@ -52,6 +52,14 @@ class DescriptionBuilder:
             "drive": attr_dict.get("Drive Size", ""),
             "teeth": attr_dict.get("Number of Teeth", ""),
             "tooth_mat": attr_dict.get("Tooth Material", ""),
+            "wattage": attr_dict.get("Wattage", ""),
+            "lumens": attr_dict.get("Lumens", ""),
+            "cct": attr_dict.get("Color Temperature", ""),
+            "base": attr_dict.get("Bulb Base", ""),
+            "wire_gauge": attr_dict.get("Wire Gauge", ""),
+            "hp": attr_dict.get("Horsepower", "") or attr_dict.get("Rated Power", ""),
+            "rpm": attr_dict.get("RPM", ""),
+            "lens_tint": attr_dict.get("Lens Tint", ""),
         }
 
     def build_invoice_description(
@@ -371,11 +379,27 @@ class DescriptionBuilder:
             clauses.append(f"{specs['conn_type']} Connection")
         if specs["flow_rate"]:
             clauses.append(f"{specs['flow_rate']} gpm Flow Rate")
+        if specs["wattage"]:
+            clauses.append(f"{specs['wattage']} W")
+        if specs["lumens"]:
+            clauses.append(f"{specs['lumens']} lm")
+        if specs["cct"]:
+            clauses.append(f"{specs['cct']}")
+        if specs["base"]:
+            clauses.append(f"{specs['base']} Base")
+        if specs["wire_gauge"]:
+            clauses.append(f"{specs['wire_gauge']}")
+        if specs["hp"]:
+            clauses.append(f"{specs['hp']} HP")
+        if specs["rpm"]:
+            clauses.append(f"{specs['rpm']} RPM")
+        if specs["lens_tint"]:
+            clauses.append(f"{specs['lens_tint']} Lens")
 
         if clauses:
-            desc_text = f"{lead} delivers reliable commercial performance. Key specifications include {', '.join(clauses)}."
+            desc_text = f"{lead}. Key specifications: {', '.join(clauses)}."
         else:
-            desc_text = f"{lead} delivers reliable commercial performance and meets standard industrial quality specifications."
+            desc_text = f"{lead}."
 
         # Validate with ClaimChecker to guarantee zero hallucinated claims
         verified_attrs_map = {a.label.lower(): a.normalized_value for a in attributes}

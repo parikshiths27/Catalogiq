@@ -174,8 +174,8 @@ def get_overview_summary(session: Session = Depends(get_session)) -> OverviewSum
     verification_rate = round((verified_products / total_products) * 100.0, 1) if total_products > 0 else None
     sources_processed = max(documents_processed, completed_batches)
     total_sources = max(total_documents, total_batches)
-    review_backlog = needs_review_products if needs_review_products > 0 else unresolved_issues
-    evidence_coverage_rate = round((evidence_attrs / total_attrs) * 100.0, 1) if total_attrs > 0 else None
+    review_backlog = (needs_review_products if needs_review_products > 0 else unresolved_issues) if total_products > 0 else 0
+    evidence_coverage_rate = round((evidence_attrs / total_attrs) * 100.0, 1) if (total_attrs > 0 and total_products > 0) else None
     completeness_rate = catalog_quality_score
 
     processing_activity: List[ProcessingActivityItemSchema] = [

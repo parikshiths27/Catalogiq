@@ -739,6 +739,130 @@ class ReferenceDataLoader:
                     "Valve Type": ["Ceramic Disc Cartridge", "Washerless Cartridge", "Compression"],
                     "Drain Assembly Included": ["Yes", "No"]
                 }
+            },
+            {
+                "dept": "Lighting & Fans",
+                "class_": "Lamps & Bulbs",
+                "fine": "LED & Fluorescent Bulbs",
+                "classpath": "Lighting & Fans>Light Bulbs>LED Bulbs",
+                "product_name": "Light Bulb",
+                "keywords": ["lamp", "bulb", "led bulb", "a19", "par38", "br30", "candelabra", "gu10", "edison", "t8", "t5", "fluorescent", "wattage", "lumens", "cct", "kelvin", "cri", "satco", "philips"],
+                "allowed_attributes": ["Wattage", "Lumens", "Color Temperature", "Bulb Base", "Bulb Shape", "Voltage Rating", "Dimmable", "CRI", "Equivalent Wattage"],
+                "lov": {
+                    "Bulb Base": ["E26 Medium", "E12 Candelabra", "E39 Mogul", "GU10", "G9", "G4", "Bi-Pin"],
+                    "Color Temperature": ["2700K", "3000K", "3500K", "4000K", "5000K", "6500K", "Warm White", "Cool White", "Daylight"],
+                    "Dimmable": ["Yes", "No"],
+                }
+            },
+            {
+                "dept": "Lighting & Fans",
+                "class_": "Indoor Lighting",
+                "fine": "Recessed & Commercial Fixtures",
+                "classpath": "Lighting & Fans>Commercial & Industrial Lighting>Recessed Fixtures",
+                "product_name": "Light Fixture",
+                "keywords": ["fixture", "downlight", "troffer", "high bay", "recessed light", "wafer", "pendant", "sconce", "strip light", "flood light", "kichler", "lithonia", "halo"],
+                "allowed_attributes": ["Wattage", "Lumens", "Color Temperature", "Voltage Rating", "Mounting Type", "Housing Material", "Finish/Color"],
+                "lov": {
+                    "Mounting Type": ["Recessed", "Surface Mount", "Suspended / Pendant", "Wall Mount"],
+                    "Voltage Rating": ["120 V", "120-277 V", "277 V", "347 V", "480 V"],
+                }
+            },
+            {
+                "dept": "Electrical",
+                "class_": "Wiring Devices",
+                "fine": "Switches & Outlets",
+                "classpath": "Electrical>Wiring Devices>Switches & Receptacles",
+                "product_name": "Switch / Receptacle",
+                "keywords": ["switch", "receptacle", "outlet", "dimmer", "gfci", "tamper resistant", "decora", "toggle", "wallplate", "single pole", "3-way", "4-way", "leviton", "lutron"],
+                "allowed_attributes": ["Device Type", "Amperage Rating", "Voltage Rating", "Poles", "Color", "Grade", "Standard/Approvals"],
+                "lov": {
+                    "Amperage Rating": ["15 A", "20 A", "30 A", "50 A"],
+                    "Voltage Rating": ["120 V", "120/277 V", "240 V", "277 V", "600 V"],
+                    "Color": ["White", "Ivory", "Black", "Light Almond", "Gray", "Brown"],
+                    "Grade": ["Residential", "Commercial", "Industrial", "Hospital Grade"],
+                }
+            },
+            {
+                "dept": "Electrical",
+                "class_": "Wire & Cable",
+                "fine": "Building Wire & Cord",
+                "classpath": "Electrical>Wire & Cable>Building Wire",
+                "product_name": "Electrical Wire / Cable",
+                "keywords": ["wire", "cable", "romex", "nm-b", "thhn", "mc cable", "extension cord", "conductors", "copper wire", "aluminum wire", "awg", "southwire"],
+                "allowed_attributes": ["Conductor Material", "Wire Gauge", "Number of Conductors", "Length", "Voltage Rating", "Jacket Material", "Color"],
+                "lov": {
+                    "Conductor Material": ["Copper", "Aluminum", "Tinned Copper"],
+                    "Wire Gauge": ["14 AWG", "12 AWG", "10 AWG", "8 AWG", "6 AWG", "4 AWG", "2 AWG", "1/0 AWG", "2/0 AWG", "4/0 AWG"],
+                    "Number of Conductors": ["2", "3", "4", "2 w/ Ground", "3 w/ Ground"],
+                }
+            },
+            {
+                "dept": "Safety & Security",
+                "class_": "Personal Protective Equipment",
+                "fine": "Safety Glasses & Eye Protection",
+                "classpath": "Safety & Security>Personal Protective Equipment (PPE)>Safety Glasses & Eye Protection",
+                "product_name": "Safety Glasses / Eyewear",
+                "keywords": ["safety glasses", "eyewear", "safety goggles", "lens", "polarized", "anti-fog", "face shield", "respirator", "hard hat", "ear protection", "edge eyewear", "wolf peak"],
+                "allowed_attributes": ["Lens Tint", "Frame Style", "Lens Coating", "Frame Color", "UV Protection", "Standard/Approvals"],
+                "lov": {
+                    "Lens Tint": ["Clear", "Smoke", "Yellow", "Copper", "Polarized", "Silver Mirror", "Blue Mirror"],
+                    "Standard/Approvals": ["ANSI Z87.1+", "CSA Z94.3", "MCEPS GL-PD 10-12", "EN166"],
+                    "Lens Coating": ["Anti-Fog", "Scratch-Resistant", "Vapor Shield"],
+                }
+            },
+            {
+                "dept": "Building Materials",
+                "class_": "Windows & Doors",
+                "fine": "Windows & Skylights",
+                "classpath": "Building Materials>Windows & Doors>Windows",
+                "product_name": "Window / Skylight",
+                "keywords": ["window", "skylight", "double hung", "casement", "sliding window", "awning window", "velux", "andersen", "provia", "united window"],
+                "allowed_attributes": ["Window Type", "Frame Material", "Glass Type", "Width", "Height", "Color", "U-Factor", "Solar Heat Gain"],
+                "lov": {
+                    "Window Type": ["Double Hung", "Single Hung", "Casement", "Awning", "Gliding", "Fixed / Picture", "Skylight", "Roof Window"],
+                    "Frame Material": ["Vinyl", "Wood", "Composite", "Aluminum", "Fiberglass"],
+                    "Color": ["White", "Black", "Bronze", "Sandtone", "Terratone", "Dark Bronze"],
+                }
+            },
+            {
+                "dept": "Building Materials",
+                "class_": "Siding & Exterior Trim",
+                "fine": "Lap Siding & Trim Boards",
+                "classpath": "Building Materials>Siding>Fiber Cement & Engineered Wood Siding",
+                "product_name": "Siding Board / Trim",
+                "keywords": ["siding", "hardieplank", "hardiepanel", "smartside", "lap siding", "trim board", "soffit", "fiber cement", "engineered wood siding", "james hardie", "louisiana-pacific"],
+                "allowed_attributes": ["Material", "Exposure/Width", "Length", "Thickness", "Texture/Finish", "Color"],
+                "lov": {
+                    "Material": ["Fiber Cement", "Engineered Wood", "Vinyl", "Aluminum", "Composite"],
+                    "Texture/Finish": ["Cedarmill", "Smooth", "Stucco", "Woodgrain", "Rough Sawn"],
+                }
+            },
+            {
+                "dept": "Building Materials",
+                "class_": "Roofing",
+                "fine": "Shingles & Underlayment",
+                "classpath": "Building Materials>Roofing>Asphalt Shingles & Underlayment",
+                "product_name": "Roofing Shingle / Underlayment",
+                "keywords": ["shingle", "roofing", "underlayment", "ice and water", "eaveguard", "duration", "landmark", "certainteed", "owens corning", "henry"],
+                "allowed_attributes": ["Shingle Type", "Material", "Color", "Coverage Area", "Wind Rating", "Warranty"],
+                "lov": {
+                    "Shingle Type": ["Architectural", "3-Tab", "Designer", "Synthetic Underlayment", "Self-Adhering Membrane"],
+                    "Color": ["Onyx Black", "Estate Gray", "Driftwood", "Brownwood", "Chateau Green", "Desert Tan"],
+                }
+            },
+            {
+                "dept": "Electrical",
+                "class_": "Motors & Drives",
+                "fine": "Industrial Electric Motors",
+                "classpath": "Electrical>Electric Motors & Drives>AC Motors",
+                "product_name": "Electric Motor",
+                "keywords": ["motor", "electric motor", "induction motor", "3-phase", "single phase", "horsepower", "rpm", "frame size", "tefc", "odp", "rated power", "siemens", "baldor", "weg"],
+                "allowed_attributes": ["Horsepower", "RPM", "Voltage Rating", "Phase", "Frame Size", "Enclosure Type", "Mounting Type", "Full Load Amps"],
+                "lov": {
+                    "Phase": ["1-Phase", "3-Phase"],
+                    "Enclosure Type": ["TEFC", "ODP", "TENV", "Explosion Proof"],
+                    "Mounting Type": ["Foot Mounted (Rigid Base)", "C-Face", "D-Flange", "Resilient Base"],
+                }
             }
         ]
 

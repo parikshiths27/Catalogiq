@@ -422,8 +422,8 @@ export const DashboardShell: React.FC = () => {
         })}
       </div>
 
-      {/* Empty State when no products */}
-      {!hasProducts && (
+      {/* Empty State when no products and no activity */}
+      {!hasProducts && activity.length === 0 && (
         <div className="p-12 border border-border bg-card text-center space-y-4 rounded-none">
           <Database className="w-12 h-12 text-muted-foreground opacity-50 mx-auto" />
           <h3 className="font-serif text-xl font-normal text-foreground">No Products in Catalog Yet</h3>
@@ -437,6 +437,40 @@ export const DashboardShell: React.FC = () => {
             <UploadCloud className="w-3.5 h-3.5" />
             <span>Upload Your First Document</span>
           </button>
+        </div>
+      )}
+
+      {/* When no products but active/recent ingestion activity is present */}
+      {!hasProducts && activity.length > 0 && (
+        <div className="border border-border bg-card p-6 space-y-4 rounded-none">
+          <div className="flex items-center justify-between border-b border-border pb-4">
+            <h3 className="font-serif text-xl font-normal text-foreground flex items-center gap-2">
+              <Activity className="w-4 h-4 text-[#9B8F77]" />
+              <span>Recent Ingestion Activity</span>
+            </h3>
+            <button
+              onClick={() => navigate('/upload')}
+              className="text-[10px] uppercase tracking-widest text-[#9B8F77] hover:text-foreground font-semibold"
+            >
+              Batch Upload &rarr;
+            </button>
+          </div>
+          <div className="divide-y divide-border">
+            {activity.slice(0, 5).map((doc) => (
+              <div key={doc.id} className="py-3 flex items-center justify-between gap-4 px-2">
+                <div className="min-w-0 space-y-0.5">
+                  <div className="text-xs font-medium text-foreground truncate">{doc.filename}</div>
+                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
+                    <span>{doc.created_at ? formatApiDateTime(doc.created_at) : '-'}</span>
+                    {doc.page_count && <span>• {doc.page_count} pages</span>}
+                  </div>
+                </div>
+                <span className="text-[9px] uppercase tracking-widest px-2 py-0.5 border border-border bg-accent text-foreground">
+                  {doc.status}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

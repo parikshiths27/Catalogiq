@@ -157,6 +157,12 @@ export const ProductsShell: React.FC = () => {
         queryClient.invalidateQueries({ queryKey: ['overview-summary'] });
         queryClient.invalidateQueries({ queryKey: ['catalogHealth'] });
         queryClient.invalidateQueries({ queryKey: ['reviews-list'] });
+        queryClient.invalidateQueries({ queryKey: ['processing-documents'] });
+        queryClient.invalidateQueries({ queryKey: ['parsed-document'] });
+        queryClient.invalidateQueries({ queryKey: ['search'] });
+        queryClient.invalidateQueries({ queryKey: ['facets'] });
+        queryClient.invalidateQueries({ queryKey: ['reconciliation'] });
+        queryClient.invalidateQueries({ queryKey: ['sources'] });
         clearSelection();
       }
     } catch (err) {
